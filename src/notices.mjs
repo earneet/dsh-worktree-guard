@@ -2,8 +2,9 @@
 // Channel budgets are frozen by contract: standing line = 1 line, session-start
 // inject <= 15 lines, deny = 3 parts, markers = 1 line. P7: no user files.
 import { resolveBinding, isRooted } from "./core/binding.mjs";
-import { commonDir, currentBranch } from "./core/gitops.mjs";
-import { readState, authorizeValid } from "./core/store.mjs";
+import { commonDir } from "./core/gitops.mjs";
+import { readState } from "./core/store.mjs";
+import { readOriginMark as coreReadOriginMark } from "./core/decision.mjs";
 
 export const PREFIX = "[worktree-guard]";
 
@@ -37,10 +38,8 @@ export async function sessionStartText({ cwd, sessionId }) {
   return null;
 }
 
-/** Channel 5 — read-domain origin marker (1 line; warn mode). */
-export function readOriginMark(binding) {
-  return `${PREFIX} 该读取来自主 checkout（非绑定副本 ${binding.worktree}）——内容是主干世界，勿据其判断副本代码现状。`;
-}
+/** Channel 5 — read-domain origin marker (1 line; warn mode). Delegates to core. */
+export const readOriginMark = coreReadOriginMark;
 
 function nameOf(root) {
   const parts = String(root).replaceAll("\\", "/").split("/");

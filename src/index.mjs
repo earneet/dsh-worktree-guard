@@ -7,9 +7,8 @@
 // we degrade gracefully to a plain spec registration (zero-dependency core).
 import { decideToolCall, takePendingMark } from "./guard.mjs";
 import { toolSpecs } from "./wt-tools.mjs";
-import { standingLine, sessionStartText, readOriginMark, PREFIX } from "./notices.mjs";
-import { resolveBinding, isRooted } from "./core/binding.mjs";
-import { commonDir } from "./core/gitops.mjs";
+import { standingLine, sessionStartText, PREFIX } from "./notices.mjs";
+import { resolveBinding } from "./core/binding.mjs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -20,7 +19,6 @@ export const Config = {
   enable: { type: "boolean", default: true },
   protectedBranches: { type: "array", default: ["master", "main"] },
   readPolicy: { type: "string", default: "warn" }, // warn | strict
-  failOpenReads: { type: "boolean", default: true },
 };
 
 /** Sidecar config: <repo>/.dsh/worktree-guard.json (P7: DSH config space). */
@@ -58,6 +56,25 @@ export function apply(ctx, config) {
       return { ...out, additionalContexts: [...(out.additionalContexts ?? []), mark] };
     }
     return out;
+  });
+
+  // ---- component D channel 2: standing status line — injected ONCE per bound
+  //      session at its first step (sandbox-policy durable-context pattern) ----
+  const standingInjected = new Set();
+  ctx.on("agent/pre-step", async (agent, next) => {
+    const header = agent?.session?.header;
+    const key = header?.id;
+    if (key && !standingInjected.has(key)) {
+      standingInjected.add(key);
+      try {
+        const { commonDir } = await import("./core/gitops.mjs");
+        const { resolveBinding } = await import("./core/binding.mjs");
+        const cd = commonDir(header.cwd);
+        const binding = await resolveBinding(cd, { sessionId: header.id, parentSession: header.parentSession });
+        if (binding && typeof agent?.inject === "function") agent.inject(standingLine(binding));
+      } catch { /* not a repo or resolution failure -> zero injection (P1) */ }
+    }
+    return next();
   });
 
   // ---- component D: session-start inject (channel 3) ----

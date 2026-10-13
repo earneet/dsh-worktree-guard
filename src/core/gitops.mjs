@@ -89,15 +89,6 @@ export function isDirty(cwd) {
   return out.length > 0;
 }
 
-/** list branches already merged into base. */
-export function mergedBranches(cwd, base) {
-  const out = git(cwd, ["branch", "--merged", base], { ignoreStderr: true });
-  return out
-    .split("\n")
-    .map((l) => l.replace(/^[*+]\s*/, "").trim())
-    .filter((l) => l && !l.includes(" "));
-}
-
 /** Parse `git worktree list` names derived from directory basename. */
 export function worktreeNameOf(root) {
   const parts = norm(root).split("/");

@@ -264,7 +264,7 @@ M2: remove {path, confirm_remove, delete_branch}
 
 ## 14. 已知边界（P6 分级词汇，写进 README）
 
-1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径、复合命令可绕——**词法启发，非边界**；rooted 下 shell 沙箱兜底（写主根=物理拒绝），repo-rooted 接不住（故后置）。
+1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag 变体（`-d -f`/`--force --delete`）已拦（对抗审查 R1 修复）；rooted 下 shell 沙箱兜底（写主根=物理拒绝），repo-rooted 接不住（故后置）。
 2. 读域守卫同属**词法启发**：junction/8.3 别名可绕过判域；strict 误判代价是多余 deny + 重试，不是错误放行——方向安全。
 3. danger-full-access 下的一切守卫 = **纯纪律级**。
 4. MCP 工具/第三方进程写盘不在范围——靠纪律 + 会话根对冲。

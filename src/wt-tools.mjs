@@ -3,9 +3,10 @@
 // name, description (three-part contract §7 channel 1), string param schema,
 // async execute(args, exec). Registered by index.mjs via ctx.tools.register.
 import * as lifecycle from "./core/lifecycle.mjs";
-import { commonDir, currentBranch } from "./core/gitops.mjs";
-import { readBinding, deleteBinding, readState, updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist, authorizeValid, DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN } from "./core/store.mjs";
-import { resolveBinding, isRooted } from "./core/binding.mjs";
+import { commonDir } from "./core/gitops.mjs";
+import { bustGuardContextCache } from "./guard.mjs";
+import { updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist, DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN } from "./core/store.mjs";
+import { resolve as resolvePath } from "node:path";
 import { norm } from "./core/paths.mjs";
 
 const createDesc = `Create an isolated git worktree copy (branch worktree-<slug>) for a task. WHEN: starting a task that should not touch the main checkout. AFTER: open a NEW session rooted at the returned worktree path (that session's sandbox then anchors to the copy). The task description is stored in .dsh/task-brief.md inside the copy for the next session. Do NOT call for tasks meant to edit the main checkout directly.`;
@@ -51,6 +52,7 @@ export function toolSpecs(helpers) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
         const r = await lifecycle.create({ taskName: args.task_name, taskBrief: args.task_brief, cwd: s.cwd, config: cfg });
+        bustGuardContextCache(); // new copy visible to the net immediately (round-1 fix)
         return {
           content: [{
             type: "text",
@@ -70,14 +72,22 @@ export function toolSpecs(helpers) {
       parameters: { type: "object", properties: { path: str("worktree path", "path to the worktree copy", true) } },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
+        // Design §8: repo-rooted sessions refuse enter and get guidance instead —
+        // binding without structural isolation causes the deny-loop failure mode.
+        const target = resolvePath(s.cwd, args.path ?? ".");
+        if (norm(s.cwd) !== norm(target)) {
+          return {
+            content: [{
+              type: "text",
+              text: `[worktree-guard] 已拒绝绑定：本会话根不是目标副本。\n原因：repo-rooted 绑定会造成读写分裂（读主根世界、写被逐次拦截）。\n下一步：以 ${target} 为会话根新开会话（推荐），获得结构性隔离。`,
+            }],
+          };
+        }
         const binding = await lifecycle.enter({ path: args.path, sessionId: s.id, cwd: s.cwd });
-        const rooted = isRooted(s.cwd, binding);
         return {
           content: [{
             type: "text",
-            text: rooted
-              ? `已绑定（rooted）：本会话根 = 副本 ${binding.worktree}。读写一律相对路径。`
-              : `已绑定（repo-rooted）：会话根不是副本目录。建议以副本为根新开会话获得结构性隔离。`,
+            text: `已绑定（rooted）：本会话根 = 副本 ${binding.worktree}。读写一律相对路径。`,
           }],
         };
       },
@@ -127,6 +137,7 @@ export function toolSpecs(helpers) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
         const r = await lifecycle.remove({ ...args, cwd: s.cwd, config: cfg, sessionId: s.id });
+        bustGuardContextCache();
         return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
       },
     },

@@ -78,7 +78,13 @@ async function main() {
       return 0;
     }
     case "authorize-main": {
-      // Human channel: the operator typing this IS the user (P4 satisfied out-of-band).
+      // P4 structural gate: the CLI human channel only accepts INTERACTIVE
+      // terminals — model shells are non-TTY, closing the obfuscation bypasses
+      // of the lexical verb net (variable concat, quote insertion).
+      if (!process.stdin.isTTY) {
+        console.error("authorize-main 是人工通道：仅接受交互式终端调用。模型侧请使用 worktree_authorize_main 工具（需用户确认）。");
+        return 1;
+      }
       const cd = commonDir(cwd);
       const ttl = Math.max(1, Math.min(Number(values["ttl-minutes"]) || 15, 240));
       const st = await updateState(cd, {

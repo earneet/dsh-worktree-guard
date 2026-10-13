@@ -115,7 +115,15 @@ const RE_AUTHORIZE_VERB = /\bauthorize[-_]main\b/i;
 // .git, any worktree-guard path mention, or direct import of guard modules.
 const RE_RELATIVE_DOTGIT = /(\.\.[\/\\])+[^;&|`]*\.git\b/i;
 const RE_STATE_AREA = /worktree-guard[\/\\]/i;
-const RE_GUARD_MODULE = /(?:import|require)\s*\(?\s*["'`][^"'`]*(?:store|lifecycle|wt-tools|guard)\.mjs/i;
+// guard-module imports: require OUR package context (worktree-guard/ or src/
+// path segment) so user-owned store.mjs/guard.mjs are not false-positived;
+// the wt.mjs CLI entry is netted by name (round-4 tightening).
+const RE_GUARD_MODULE = new RegExp(
+  [
+    /(?:import|require)\s*\(?\s*["'`][^"'`]*(?:worktree-guard[\/\\]|src[\/\\])[^"'`]*(?:store|lifecycle|wt-tools|guard)\.mjs["'`]/i.source,
+    /(?:import|require)\s*\(?\s*["'`](?:\.\/)?wt\.mjs["'`]/i.source,
+  ].join("|"),
+);
 
 export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = {}) {
   const cmd = typeof command === "string" ? command : "";

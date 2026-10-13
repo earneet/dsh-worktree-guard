@@ -1,0 +1,6 @@
+# dsh-worktree-guard bundle patch: mount the worktree-guard cordis plugin.
+# Compose into a DSH profile via the package.json "dsh" manifest field.
+plugins:
+  worktree-guard:
+    $if: ctx.worktreeGuard?.enable ?? true
+    $ref: "npm:dsh-worktree-guard"

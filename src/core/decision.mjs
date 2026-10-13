@@ -106,8 +106,16 @@ const RE_GIT_BRANCH = /(^|[;&|]\s*)git\s+branch\b/i;
 const RE_GIT_C = /(^|[;&|]\s*)git\s+(?:-C\s+(--\S+|\S+)|--git-dir(?:=|\s+)(\S+)|--work-tree(?:=|\s+)(\S+))/i;
 // checkout/switch to protected — tolerates retargeting prefix args (e.g. `git -C . checkout main`)
 const RE_CHECKOUT_PROTECTED = /git\s+(?:\S+\s+)*?(?:checkout|switch)\s+(?:-\S+\s+)*(?:master|main)\b/i;
-// human-only channels (P4): the CLI authorize path and grant-flavored flags
-const RE_WT_CLI_AUTHORIZE = /\bwt\.mjs\b[^\n]*\bauthorize[-_]main\b|\bauthorize[-_]main\b[^\n]*\bwt\.mjs\b/i;
+// human-only authorization (P4): the model must NEVER say authorize-main in a
+// shell — the only sanctioned path is the ask-gated worktree_authorize_main tool.
+// (Humans use their own terminal, which does not pass this net; rename-the-CLI
+// variants fall out because we key on the verb, not the file name.)
+const RE_AUTHORIZE_VERB = /\bauthorize[-_]main\b/i;
+// guard state area reachable from the shell (round-3 blocker): relative .. into
+// .git, any worktree-guard path mention, or direct import of guard modules.
+const RE_RELATIVE_DOTGIT = /(\.\.[\/\\])+[^;&|`]*\.git\b/i;
+const RE_STATE_AREA = /worktree-guard[\/\\]/i;
+const RE_GUARD_MODULE = /(?:import|require)\s*\(?\s*["'`][^"'`]*(?:store|lifecycle|wt-tools|guard)\.mjs/i;
 
 export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = {}) {
   const cmd = typeof command === "string" ? command : "";
@@ -119,10 +127,15 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   const worktreeBranchToken = (t) =>
     /^worktree-[\w.-]+$/i.test(t) || (binding && t.replace(/^[*+]/, "") === binding.branch);
 
-  // 0) human-only authorization channels: the CLI must never be reachable by the
-  //    model through a shell (round-2 blocker) — P4 gates are ask-gated tools only.
-  if (RE_WT_CLI_AUTHORIZE.test(cmd)) {
-    return deny("pwsh", summarize(cmd), "试图经 CLI 自授主分支写权限", "authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。");
+  // 0) human-only authorization channels: the model must never reach authorize
+  //    semantics through a shell, whatever the entry point (round-2/3 blockers).
+  if (RE_AUTHORIZE_VERB.test(cmd)) {
+    return deny("pwsh", summarize(cmd), "试图经 shell 自授主分支写权限", "authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。");
+  }
+  // 0b) guard state area is unreachable from the shell — write-tool rule 1's
+  //     shell twin (round-3 blocker: Set-Content ../../.git/worktree-guard/...).
+  if (RE_STATE_AREA.test(cmd) || RE_RELATIVE_DOTGIT.test(cmd) || RE_GUARD_MODULE.test(cmd)) {
+    return deny("pwsh", summarize(cmd), "命令触及守卫状态区 / git 元数据 / 守卫模块", "状态由 worktree_* 工具管理；这是防自授硬规则，不可经 shell 绕过。");
   }
   // 1) push mentioning a protected ref (anywhere in the command: errs safe for a lexical net)
   const mPush = cmd.match(RE_PUSH);

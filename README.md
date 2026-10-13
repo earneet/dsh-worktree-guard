@@ -41,7 +41,7 @@ node wt.mjs status
 ## 开发
 
 ```bash
-node --test   # 46 项：决策表单测 + 真实临时仓库集成测
+node --test   # 决策表单测 + 真实临时仓库集成测 + 三轮对抗审查回归（见 test/）
 ```
 
 零依赖纯 ESM（Node ≥20，Windows 优先适配）。

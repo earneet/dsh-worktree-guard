@@ -214,9 +214,11 @@ export function toolSpecs(helpers) {
           await clearAllowlist(cd);
           return { content: [{ type: "text", text: "allowlist 已清空。" }] };
         }
-        // add — P4 gate confirmed upstream
+        // add — P4 gate confirmed upstream; key is repo-absolute (round-2 fix)
         const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || DEFAULT_ALLOW_TTL_MIN, 480));
-        const e = await addAllowEntry(cd, { path: args.path, reason: args.reason, ttlMinutes: ttl, grantedBy: "user-ask-gate" });
+        const { listWorktrees } = await import("./core/gitops.mjs");
+        const { mainRoot } = listWorktrees(s.cwd);
+        const e = await addAllowEntry(cd, { path: args.path, reason: args.reason, ttlMinutes: ttl, grantedBy: "user-ask-gate", mainRoot });
         await appendAudit(cd, { type: "allow_add", session: s.id, ...e });
         return { content: [{ type: "text", text: `已放行 ${e.path}，${e.expires_at} 失效。` }] };
       },

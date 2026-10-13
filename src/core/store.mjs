@@ -77,13 +77,16 @@ export async function updateState(commonDir, patch) {
 
 // ---- allowlist (per-path TTL grants; model-facing write of this file is denied by guard) ----
 
-const DANGEROUS_PATTERNS = [/^\/$/, /^\.git$/i, /^\.git\//i, /^\*$/, /^%/, /\.\./];
+const DANGEROUS_PATTERNS = [/^\/$/, /^\.git$/i, /^\.git\//i, /^\*$/, /^%/, /\.\./, /^\.$/];
 
 export function validateAllowlistPath(rel) {
   if (typeof rel !== "string" || rel.trim() === "") return "path required";
   for (const re of DANGEROUS_PATTERNS) if (re.test(rel.trim())) return `dangerous pattern rejected: ${rel}`;
   return null;
 }
+
+/** Serialize read-modify-write mutations (round-2 fix: concurrent adds lost updates). */
+let allowlistChain = Promise.resolve();
 
 export async function readAllowlist(commonDir) {
   const now = Date.now();
@@ -100,19 +103,37 @@ export async function readAllowlist(commonDir) {
   return a;
 }
 
-export async function addAllowEntry(commonDir, { path, reason, ttlMinutes, grantedBy }) {
-  const err = validateAllowlistPath(path);
-  if (err) throw new Error(err);
-  const a = await readAllowlist(commonDir);
-  a.entries = a.entries ?? {};
-  const expires = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
-  a.entries[norm(path)] = { reason: reason ?? "", granted_by: grantedBy ?? "user", granted_at: new Date().toISOString(), expires_at: expires };
-  await atomicWrite(join(stateRoot(commonDir), "allowlist.json"), JSON.stringify(a, null, 2));
-  return { path, expires_at: expires };
+/**
+ * Grant ONE path/pattern. Keys are ABSOLUTE against the repo main root —
+ * never process.cwd() (round-2 major fix). Relative `path` resolves under mainRoot.
+ */
+export function addAllowEntry(commonDir, { path, reason, ttlMinutes, grantedBy, mainRoot }) {
+  const task = async () => {
+    const err = validateAllowlistPath(path);
+    if (err) throw new Error(err);
+    if (!mainRoot) throw new Error("mainRoot required: allowlist keys must be repo-absolute");
+    const { isAbsolute, join: pjoin } = await import("node:path");
+    const key = norm(isAbsolute(path) ? path : pjoin(mainRoot, path));
+    const a = await readAllowlist(commonDir);
+    a.entries = a.entries ?? {};
+    const expires = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
+    a.entries[key] = { reason: reason ?? "", granted_by: grantedBy ?? "user", granted_at: new Date().toISOString(), expires_at: expires };
+    await atomicWrite(join(stateRoot(commonDir), "allowlist.json"), JSON.stringify(a, null, 2));
+    return { path: key, expires_at: expires };
+  };
+  // serialize read-modify-write; surface THIS call's outcome, keep the chain alive on error
+  const p = allowlistChain.then(task);
+  allowlistChain = p.catch(() => {});
+  return p;
 }
 
-export async function clearAllowlist(commonDir) {
-  await atomicWrite(join(stateRoot(commonDir), "allowlist.json"), JSON.stringify({ entries: {} }, null, 2));
+export function clearAllowlist(commonDir) {
+  const task = async () => {
+    await atomicWrite(join(stateRoot(commonDir), "allowlist.json"), JSON.stringify({ entries: {} }, null, 2));
+  };
+  const p = allowlistChain.then(task);
+  allowlistChain = p.catch(() => {});
+  return p;
 }
 
 // ---- audit (jsonl convenience copy; durable copy lives in DSH session log) ----

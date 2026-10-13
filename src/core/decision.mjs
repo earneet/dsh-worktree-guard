@@ -102,43 +102,65 @@ export function readOriginMark(binding) {
 // ---------- pwsh decision (design §6 row 4; lexical, always-on net) ----------
 
 const RE_PUSH = /(^|[;&|]\s*)git\s+push\b/i;
-const RE_DEL_WORKTREE_BRANCH = /(^|[;&|]\s*)git\s+branch\s+((?:-\w+\s*|--\w[\w-]*\s*)+)([^\s;&|]+)/i;
+const RE_GIT_BRANCH = /(^|[;&|]\s*)git\s+branch\b/i;
 const RE_GIT_C = /(^|[;&|]\s*)git\s+(?:-C\s+(--\S+|\S+)|--git-dir(?:=|\s+)(\S+)|--work-tree(?:=|\s+)(\S+))/i;
-const RE_CHECKOUT_PROTECTED = /(^|[;&|]\s*)git\s+(?:checkout|switch)\s+(?:-\S+\s+)*(?:master|main)\b/i;
+// checkout/switch to protected — tolerates retargeting prefix args (e.g. `git -C . checkout main`)
+const RE_CHECKOUT_PROTECTED = /git\s+(?:\S+\s+)*?(?:checkout|switch)\s+(?:-\S+\s+)*(?:master|main)\b/i;
+// human-only channels (P4): the CLI authorize path and grant-flavored flags
+const RE_WT_CLI_AUTHORIZE = /\bwt\.mjs\b[^\n]*\bauthorize[-_]main\b|\bauthorize[-_]main\b[^\n]*\bwt\.mjs\b/i;
 
 export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = {}) {
   const cmd = typeof command === "string" ? command : "";
-  const protectedList = ctx.protectedBranches ?? PROTECTED_DEFAULT;
+  // sanitize config: non-string entries must never crash the net into fail-open
+  const protectedList = (Array.isArray(ctx.protectedBranches) ? ctx.protectedBranches : [])
+    .filter((s) => typeof s === "string" && s.trim() !== "");
+  const prot = protectedList.length ? protectedList : PROTECTED_DEFAULT;
   const authorized = !!auth?.authorize;
+  const worktreeBranchToken = (t) =>
+    /^worktree-[\w.-]+$/i.test(t) || (binding && t.replace(/^[*+]/, "") === binding.branch);
 
+  // 0) human-only authorization channels: the CLI must never be reachable by the
+  //    model through a shell (round-2 blocker) — P4 gates are ask-gated tools only.
+  if (RE_WT_CLI_AUTHORIZE.test(cmd)) {
+    return deny("pwsh", summarize(cmd), "试图经 CLI 自授主分支写权限", "authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。");
+  }
   // 1) push mentioning a protected ref (anywhere in the command: errs safe for a lexical net)
   const mPush = cmd.match(RE_PUSH);
-  const protRe = new RegExp(`\\b(?:${protectedList.map(esc).join("|")})\\b`, "i");
+  const protRe = new RegExp(`\\b(?:${prot.map(esc).join("|")})\\b`, "i");
   if (mPush && protRe.test(cmd)) {
     if (authorized) return allow(); // user-gated grant (TTL)
-    return deny("pwsh", summarize(cmd), `push 目标包含受保护分支（${protectedList.join("/")}）`, "合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。");
+    return deny("pwsh", summarize(cmd), `push 目标包含受保护分支（${prot.join("/")}）`, "合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。");
+  }
+  // 1b) push DELETING a worktree branch (remote deletion, round-2 fix) — only the
+  //     destructive forms (`--delete`/`-d`, or `:branch` refspec); pushing own branch stays open.
+  if (mPush && !authorized && /--delete\b|(?::worktree-[\w.-]+)/i.test(cmd)) {
+    const tokens = cmd.split(/[\s;&|]+/).map((t) => t.replace(/^:/, ""));
+    if (tokens.some((t) => worktreeBranchToken(t))) {
+      return deny("pwsh", summarize(cmd), "远程删除 worktree 分支", "分支删除由收尾流程在本地执行（仅删已合并分支）。");
+    }
   }
   // 2) bare `git push` while ON a protected branch (zcode lineage)
-  if (RE_PUSH.test(cmd) && currentBranchName && protectedList.includes(currentBranchName)) {
+  if (mPush && currentBranchName && prot.includes(currentBranchName)) {
     if (!authorized) {
       return deny("pwsh", summarize(cmd), `当前处于受保护分支 ${currentBranchName}，裸 push 等同推送主干`, "请显式指定目标分支，或走授权流程。");
     }
   }
-  // 3) delete any worktree-* branch — flags captured as a group so variants like
-  //    `-d -f W`, `--force --delete W`, `-f -D W` all resolve the real branch token.
-  const mDel = cmd.match(RE_DEL_WORKTREE_BRANCH);
-  if (mDel) {
-    const branch = mDel[3];
-    if (branch.startsWith("worktree-") || (binding && branch === binding.branch)) {
-      return deny("pwsh", summarize(cmd), "删除 worktree 分支", "分支删除由 worktree_exit / worktree_remove 收尾流程执行（仅删已合并分支）。");
+  // 3) any `git branch` command touching a worktree branch token — decoy-first
+  //    multi-branch deletes (`git branch -d decoy worktree-x`) and equals-form
+  //    flags all fall out of token scanning (round-2 fix).
+  if (RE_GIT_BRANCH.test(cmd)) {
+    const tokens = cmd.split(/[\s;&|]+/).map((t) => t.replace(/^[*+]/, ""));
+    if (tokens.some((t) => worktreeBranchToken(t))) {
+      return deny("pwsh", summarize(cmd), "git branch 命令涉及 worktree 分支", "worktree 分支的创建/删除由 worktree_* 工具统一管理（仅删已合并分支）。");
     }
   }
   // 4) git retargeting flags: absolute targets classified; RELATIVE `..`-escapes
-  //    denied while bound (cwd is the copy — any ..-chain leaves it).
+  //    denied while bound — cwd is the copy, so ANY `..` hop leaves it (round-2: also
+  //    `sub/../../..` forms; `.` alone is fine but the checkout rule below still nets it).
   const mC = RE_GIT_C.exec(cmd);
   if (mC) {
     const target = mC[2] ?? mC[3] ?? mC[4];
-    if (binding && typeof target === "string" && /^\.\.[\\/]/.test(target)) {
+    if (binding && typeof target === "string" && !target.startsWith("--") && /(^|[\\/])\.\.([\\/]|$)/.test(target)) {
       return deny("pwsh", summarize(cmd), "git 定向参数以 .. 逃出副本", `本会话绑定副本 ${binding.worktree}；请在副本目录内直接执行 git 命令。`);
     }
     for (const p of extractAbsolutePaths(cmd.slice(mC.index))) {
@@ -148,8 +170,8 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
       }
     }
   }
-  // 5) checkout/switch to a protected branch while bound (compound-command net, zcode lineage)
-  if (binding && RE_CHECKOUT_PROTECTED.test(cmd) && !authorized) {
+  // 5) checkout/switch to a protected branch while bound (compound + retargeted forms)
+  if (binding && protRe.test(cmd) && RE_CHECKOUT_PROTECTED.test(cmd) && !authorized) {
     return deny("pwsh", summarize(cmd), "切换到受保护分支", `本会话绑定副本 ${binding.worktree}；收尾合并走授权流程，不要直接切主干。`);
   }
   // 6) residual absolute paths into main / git-meta while bound (lexical net; last resort)

@@ -172,9 +172,9 @@ test("RG10 authorize grant read from state end-to-end", async () => {
 });
 
 test("RG11 allowlist add via store lifts exact subtree (P4 grant consumed)", async () => {
-  await addAllowEntry(cd, { path: "docs", reason: "test", ttlMinutes: 5, grantedBy: "test" });
+  await addAllowEntry(cd, { path: "docs", reason: "test", ttlMinutes: 5, grantedBy: "test", mainRoot: norm(repo) });
   const entries = (await readAllowlist(cd)).entries;
-  assert.ok(Object.keys(entries).some((k) => k.endsWith("/docs")));
+  assert.ok(Object.keys(entries).includes(norm(join(repo, "docs"))), "key must be repo-absolute");
 });
 
 test("RG12 session-start text: clean repo -> null; bound session -> guidance", async () => {

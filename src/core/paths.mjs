@@ -2,7 +2,7 @@
 // Ported from opencode-worktree-isolation norm() lineage, hardened per
 // adversarial review: strip \\?\ prefixes BEFORE resolve, unify separators,
 // case-fold on win32, and classify targets against main/other-worktree/.git.
-import { isAbsolute, resolve, join, dirname, sep } from "node:path";
+import { isAbsolute, resolve, join, dirname } from "node:path";
 import { platform } from "node:os";
 import { execFileSync } from "node:child_process";
 import { statSync, readFileSync } from "node:fs";
@@ -40,9 +40,29 @@ export async function physicalKey(p) {
   }
 }
 
-/** Display form: keep the caller's original text for messages. */
-export function display(p) {
-  return typeof p === "string" ? p : String(p ?? "");
+/**
+ * Physical identity for possibly-nonexistent targets: realpath the nearest
+ * EXISTING ancestor, reattach the remainder. A NEW file created THROUGH a
+ * junction then classifies by where it physically lands (round-2 fix).
+ */
+export async function physicalAncestorKey(p) {
+  const { realpath } = await import("node:fs/promises");
+  const { dirname: dn, join: pj } = await import("node:path");
+  const base = stripExtendedLengthPrefix(p);
+  let dir = dn(base);
+  let prefix;
+  for (;;) {
+    try {
+      prefix = await realpath(dir);
+      break;
+    } catch {
+      const parent = dn(dir);
+      if (parent === dir) return norm(base); // hit filesystem root without luck
+      dir = parent;
+    }
+  }
+  const rest = base.slice(dir.length).replaceAll("\\", "/");
+  return norm(pj(prefix, rest));
 }
 
 /** git-common-dir of a checkout (main: <root>/.git ; worktree: file -> path). */
@@ -117,4 +137,4 @@ export function extractAbsolutePaths(command) {
   return [...out];
 }
 
-export { IS_WIN, sep, dirname };
+export { IS_WIN, dirname };

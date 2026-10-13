@@ -3,7 +3,7 @@
 //   2. lazy parentSession chain walk (native DSH lineage; depth cap 10), snapshot to own file
 //   3. null => open (host sandbox semantics; P1)
 // Parent ids arrive from the caller (guard passes exec.agent.session.header.parentSession).
-import { readBinding, writeBinding, readState } from "./store.mjs";
+import { readBinding, writeBinding } from "./store.mjs";
 import { norm } from "./paths.mjs";
 
 export const MAX_LINEAGE_DEPTH = 10;
@@ -42,10 +42,4 @@ export async function resolveBinding(commonDir, ident, hooks = {}) {
 /** Is `cwd` the bound worktree root (rooted session detection)? */
 export function isRooted(cwd, binding) {
   return !!binding && norm(cwd) === norm(binding.worktree);
-}
-
-/** Stale-state hint for unbound sessions (informational only; never a binding). */
-export async function lastActiveInfo(commonDir) {
-  const s = await readState(commonDir);
-  return s.last_active ? s : null;
 }

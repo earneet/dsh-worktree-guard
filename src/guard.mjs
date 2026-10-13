@@ -8,7 +8,7 @@
 import { decideWrite, decideRead, decidePwsh } from "./core/decision.mjs";
 import { resolveBinding } from "./core/binding.mjs";
 import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.mjs";
-import { norm, physicalKey } from "./core/paths.mjs";
+import { norm, physicalAncestorKey } from "./core/paths.mjs";
 import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/store.mjs";
 
 /** Cache guard context per common-dir for a short TTL (git worktree list is not free). */
@@ -112,12 +112,13 @@ export async function decideToolCall(exec, opts = {}) {
 
   if (FILE_TOOLS.has(toolName)) {
     const raw = args.file_path ?? args.filePath ?? args.path;
-    // physical (realpath) identity when the target exists — defeats junction/8.3
-    // aliases for the dangerous case: overwriting an EXISTING file (design §12).
+    // physical (realpath) identity — defeats junction/8.3 aliases for BOTH the
+    // existing-target case and NEW files written THROUGH a junction: resolve the
+    // nearest existing ancestor and reattach the remainder (round-2 fix #5).
     let target = norm(raw, baseDir);
     if (target) {
       try {
-        target = await physicalKey(target);
+        target = await physicalAncestorKey(target);
       } catch { /* keep lexical */ }
     }
     const d = decideWrite(target, baseDir, ctx, binding, await loadAuth(commonDir));

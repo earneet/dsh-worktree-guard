@@ -7,7 +7,7 @@
 // we degrade gracefully to a plain spec registration (zero-dependency core).
 import { decideToolCall, takePendingMark } from "./guard.mjs";
 import { toolSpecs } from "./wt-tools.mjs";
-import { standingLine, sessionStartText, PREFIX } from "./notices.mjs";
+import { standingLine, sessionStartText } from "./notices.mjs";
 import { resolveBinding } from "./core/binding.mjs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";

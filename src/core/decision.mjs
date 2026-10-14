@@ -1,36 +1,35 @@
 // core/decision.mjs — frozen decision tables (design §6). Every row maps to tests.
-// Pure functions: no fs, no git. All inputs are pre-normalized by the caller.
-//
-// Terminology (P6 grades):
-//   structural  — host sandbox / ask gate
-//   lexical     — path normalization / command text heuristics (this module)
-//   discipline  — prompt layer only
+// Pure functions: no fs, no git. All inputs are pre-normalized by the caller
+// (guard.mjs assembles the runtime context).
 
 import { norm, isUnder, classifyTarget, extractAbsolutePaths } from "./paths.mjs";
+import { matchesMainWhitelist } from "./sidecar.mjs";
+import { DEFAULT_PROTECTED_BRANCHES as PROTECTED_DEFAULT, DEFAULT_BRANCH_PREFIX } from "./constants.mjs";
 
-const PROTECTED_DEFAULT = ["master", "main"];
-
-// ---------- context assembly (caller: guard.ts) ----------
+// ---------- context assembly (caller: guard.mjs) ----------
 
 /**
  * Build the guard context for one repo from live git data (caller supplies).
- * { mainRoot, commonDir, worktrees: [{root,name}], protectedBranches }
+ * { mainRoot, commonDir, worktrees: [{root,name}], protectedBranches, branchPrefix }
  */
-export function makeContext({ mainRoot, commonDir, worktrees = [], protectedBranches = PROTECTED_DEFAULT }) {
+export function makeContext({ mainRoot, commonDir, worktrees = [], protectedBranches = PROTECTED_DEFAULT, branchPrefix = DEFAULT_BRANCH_PREFIX }) {
   return {
     mainRoot: norm(mainRoot),
     commonDir: norm(commonDir),
     worktrees: worktrees.map((w) => ({ root: norm(w.root), name: w.name })),
     protectedBranches,
+    branchPrefix,
   };
 }
 
 // ---------- authorization state (P4 gate output consumed here) ----------
-// { authorize: <authorizeValid(state) result or null>, allowlist: {normPath: entry} }
+// { authorize: <authorizeValid(state) result or null>, allowlist: {normPath: entry},
+//   whitelist: [sidecar main_write_whitelist patterns] }
 // P1 note: these lift GUARD rules only — the host sandbox still applies structurally.
 
 function mainWriteAuthorized(target, auth) {
   if (auth?.authorize) return true; // user passed the ask gate (TTL still valid)
+  if (auth?.whitelist?.length && matchesMainWhitelist(target, auth.whitelist)) return true;
   if (auth?.allowlist) {
     const t = norm(target);
     // exact file or directory-prefix match against granted entries
@@ -132,8 +131,10 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
     .filter((s) => typeof s === "string" && s.trim() !== "");
   const prot = protectedList.length ? protectedList : PROTECTED_DEFAULT;
   const authorized = !!auth?.authorize;
-  const worktreeBranchToken = (t) =>
-    /^worktree-[\w.-]+$/i.test(t) || (binding && t.replace(/^[*+]/, "") === binding.branch);
+  const worktreeBranchToken = (t) => {
+    const prefix = String(ctx.branchPrefix ?? DEFAULT_BRANCH_PREFIX).toLowerCase();
+    return t.toLowerCase().startsWith(prefix) || (binding && t.replace(/^[*+]/, "") === binding.branch);
+  };
 
   // 0) human-only authorization channels: the model must never reach authorize
   //    semantics through a shell, whatever the entry point (round-2/3 blockers).
@@ -154,7 +155,8 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   }
   // 1b) push DELETING a worktree branch (remote deletion, round-2 fix) — only the
   //     destructive forms (`--delete`/`-d`, or `:branch` refspec); pushing own branch stays open.
-  if (mPush && !authorized && /--delete\b|(?::worktree-[\w.-]+)/i.test(cmd)) {
+  const colonRe = new RegExp(`:${String(ctx.branchPrefix ?? DEFAULT_BRANCH_PREFIX).toLowerCase()}[\\w.-]+`, "i");
+  if (mPush && !authorized && (/--delete\b/i.test(cmd) || colonRe.test(cmd))) {
     const tokens = cmd.split(/[\s;&|]+/).map((t) => t.replace(/^:/, ""));
     if (tokens.some((t) => worktreeBranchToken(t))) {
       return deny("pwsh", summarize(cmd), "远程删除 worktree 分支", "分支删除由收尾流程在本地执行（仅删已合并分支）。");

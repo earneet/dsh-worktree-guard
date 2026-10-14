@@ -4,7 +4,6 @@
 // case-fold on win32, and classify targets against main/other-worktree/.git.
 import { isAbsolute, resolve, join, dirname } from "node:path";
 import { platform } from "node:os";
-import { execFileSync } from "node:child_process";
 import { statSync, readFileSync } from "node:fs";
 
 const IS_WIN = platform() === "win32";
@@ -65,7 +64,8 @@ export async function physicalAncestorKey(p) {
   return norm(pj(prefix, rest));
 }
 
-/** git-common-dir of a checkout (main: <root>/.git ; worktree: file -> path). */
+/** git-common-dir of a checkout (main: <root>/.git ; worktree: file -> path).
+ *  Sync fs-only (no git spawn); guard paths use gitops.commonDir (async). */
 export function gitCommonDir(checkoutRoot) {
   const dotGit = join(checkoutRoot, ".git");
   try {
@@ -82,14 +82,15 @@ export function gitCommonDir(checkoutRoot) {
   }
 }
 
-/** Repo root of a checkout via git rev-parse --show-toplevel. */
-export function gitTopLevel(cwd) {
-  const out = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-  return norm(out);
+/** Repo root of a checkout via `git rev-parse --show-toplevel` (async — kept for
+ *  callers that need the toplevel rather than the common dir). */
+export async function gitTopLevel(cwd) {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const out = await promisify(execFile)("git", ["rev-parse", "--show-toplevel"], {
+    cwd, encoding: "utf8", windowsHide: true,
+  });
+  return norm(out.stdout.trim());
 }
 
 /** Does `target` (normed) live inside `dir` (normed)? dir must be a directory root. */

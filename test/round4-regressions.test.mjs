@@ -50,7 +50,7 @@ test("R4-2 CLI authorize-main refuses non-TTY (model shells) structurally", asyn
   assert.ok(failed, "non-TTY authorize-main must exit non-zero");
   const { readState } = await import("../src/core/store.mjs");
   const { commonDir } = await import("../src/core/gitops.mjs");
-  const st = await readState(commonDir(d));
+  const st = await readState(await commonDir(d));
   assert.equal(st.allow_main_writes?.allow_main_writes, undefined, "no grant may be written via non-TTY CLI");
 });
 

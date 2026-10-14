@@ -6,8 +6,9 @@ import { parseArgs } from "node:util";
 import { cwd as processCwd } from "node:process";
 import * as lifecycle from "./src/core/lifecycle.mjs";
 import { commonDir } from "./src/core/gitops.mjs";
-import { repoConfig } from "./src/index.mjs";
+import { loadSidecar as repoConfig } from "./src/core/sidecar.mjs";
 import { updateState, appendAudit } from "./src/core/store.mjs";
+import { AUTHORIZE_TTL_CAP_MIN } from "./src/core/constants.mjs";
 
 const HELP = `wt — dsh-worktree-guard CLI（与 worktree_* 工具同一 core）
 
@@ -85,8 +86,8 @@ async function main() {
         console.error("authorize-main 是人工通道：仅接受交互式终端调用。模型侧请使用 worktree_authorize_main 工具（需用户确认）。");
         return 1;
       }
-      const cd = commonDir(cwd);
-      const ttl = Math.max(1, Math.min(Number(values["ttl-minutes"]) || 15, 240));
+      const cd = await commonDir(cwd);
+      const ttl = Math.max(1, Math.min(Number(values["ttl-minutes"]) || 15, AUTHORIZE_TTL_CAP_MIN));
       const st = await updateState(cd, {
         allow_main_writes: {
           allow_main_writes: true,
@@ -101,7 +102,7 @@ async function main() {
       return 0;
     }
     case "revoke-main": {
-      const cd = commonDir(cwd);
+      const cd = await commonDir(cwd);
       await updateState(cd, { allow_main_writes: {} });
       await appendAudit(cd, { type: "revoke_main", by: "cli-human" });
       console.log("已收回授权");

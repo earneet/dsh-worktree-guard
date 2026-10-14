@@ -1,30 +1,37 @@
-// core/gitops.mjs — pure-ish git operations over child_process. No cordis deps.
-// Every function takes an explicit cwd and returns plain data; throws on git failure.
-import { execFileSync } from "node:child_process";
+// core/gitops.mjs — git operations over async child_process (round-5 M1: the
+// guard runs on hot async paths; execFileSync blocked the host event loop
+// 30-100ms per spawn on Windows). No cordis deps; every function takes an
+// explicit cwd and returns plain data; rejects on git failure.
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import { norm, isUnder } from "./paths.mjs";
 
-function git(cwd, args, opts = {}) {
-  return execFileSync("git", args, {
+const execFileP = promisify(execFile);
+
+async function git(cwd, args, opts = {}) {
+  const { stdout } = await execFileP("git", args, {
     cwd,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", opts.ignoreStderr ? "ignore" : "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
     ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
   });
+  return stdout;
 }
 
-export function gitOk(cwd, args) {
+export async function gitOk(cwd, args) {
   try {
-    git(cwd, args, { ignoreStderr: true });
+    await git(cwd, args);
     return true;
   } catch {
     return false;
   }
 }
 
-/** Main checkout root = the worktree whose .git is a directory, from `git worktree list`. */
-export function listWorktrees(cwd) {
-  const out = git(cwd, ["worktree", "list", "--porcelain"], { ignoreStderr: true });
+/** Registered worktrees; the main checkout is always listed first (skip bare). */
+export async function listWorktrees(cwd) {
+  const out = await git(cwd, ["worktree", "list", "--porcelain"]);
   const entries = [];
   let cur = null;
   for (const line of out.split("\n")) {
@@ -36,7 +43,6 @@ export function listWorktrees(cwd) {
     else if (cur && line.startsWith("branch ")) cur.branch = line.slice(7).trim().replace(/^refs\/heads\//, "");
   }
   if (cur) entries.push(cur);
-  // `git worktree list` always lists the main checkout first; skip bare repos.
   const firstNonBare = entries.find((e) => !e.bare);
   const mainRoot = firstNonBare ? firstNonBare.root : null;
   return { mainRoot, entries };
@@ -44,15 +50,15 @@ export function listWorktrees(cwd) {
 
 /** git-common-dir (shared state) for a checkout. NOTE: git prints a RELATIVE
  *  path (".git") at top level — resolve against the target cwd, never process.cwd(). */
-export function commonDir(cwd) {
-  const out = git(cwd, ["rev-parse", "--git-common-dir"], { ignoreStderr: true }).trim();
+export async function commonDir(cwd) {
+  const out = (await git(cwd, ["rev-parse", "--git-common-dir"])).trim();
   return norm(isAbsolute(out) ? out : resolve(cwd, out));
 }
 
-/** Current branch short name, or null (detached). */
-export function currentBranch(cwd) {
+/** Current branch short name, or null (detached / failure). */
+export async function currentBranch(cwd) {
   try {
-    return git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"], { ignoreStderr: true }).trim();
+    return (await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   } catch {
     return null;
   }
@@ -68,28 +74,28 @@ export function branchExists(cwd, branch) {
 }
 
 /** Only deletes merged branches (built-in merge protection). */
-export function deleteMergedBranch(cwd, branch) {
-  git(cwd, ["branch", "-d", branch], { ignoreStderr: true });
+export async function deleteMergedBranch(cwd, branch) {
+  await git(cwd, ["branch", "-d", branch]);
 }
 
-export function addWorktree(cwd, path, branch, baseRef) {
+export async function addWorktree(cwd, path, branch, baseRef) {
   const args = ["worktree", "add"];
   if (baseRef) args.push("-b", branch, path, baseRef);
   else args.push("-b", branch, path);
-  git(cwd, args);
+  await git(cwd, args);
 }
 
-export function removeWorktree(cwd, path, { force = false } = {}) {
-  git(cwd, ["worktree", "remove", ...(force ? ["--force"] : []), path], { ignoreStderr: true });
+export async function removeWorktree(cwd, path, { force = false } = {}) {
+  await git(cwd, ["worktree", "remove", ...(force ? ["--force"] : []), path]);
 }
 
 /** Uncommitted-changes check for a checkout. */
-export function isDirty(cwd) {
-  const out = git(cwd, ["status", "--porcelain"], { ignoreStderr: true }).trim();
+export async function isDirty(cwd) {
+  const out = (await git(cwd, ["status", "--porcelain"])).trim();
   return out.length > 0;
 }
 
-/** Parse `git worktree list` names derived from directory basename. */
+/** Directory basename used as the copy's short name. */
 export function worktreeNameOf(root) {
   const parts = norm(root).split("/");
   return parts[parts.length - 1] || norm(root);

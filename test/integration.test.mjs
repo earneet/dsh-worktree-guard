@@ -45,7 +45,7 @@ test("L01 create -> worktree + branch + brief + skill", async () => {
   const r = await lifecycle.create({ taskName: "Fix Login!", taskBrief: "do the thing", cwd: repo });
   wtPath = r.worktree;
   assert.equal(r.branch, "worktree-fix-login");
-  assert.equal(currentBranch(wtPath), "worktree-fix-login");
+  assert.equal(await currentBranch(wtPath), "worktree-fix-login");
   const brief = await readFile(join(wtPath, ".dsh", "task-brief.md"), "utf8");
   assert.match(brief, /do the thing/);
   const skill = await readFile(join(wtPath, ".dsh", "skills", "worktree-cleanup", "SKILL.md"), "utf8");
@@ -54,7 +54,7 @@ test("L01 create -> worktree + branch + brief + skill", async () => {
 });
 
 test("L02 enter from rooted session; mode reported", async () => {
-  cd = commonDir(wtPath);
+  cd = await commonDir(wtPath);
   const b = await lifecycle.enter({ path: wtPath, sessionId: "s1", cwd: wtPath });
   assert.equal(norm(b.worktree), norm(wtPath));
   const st = await lifecycle.status({ cwd: wtPath, sessionId: "s1" });

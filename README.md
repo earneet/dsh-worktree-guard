@@ -36,7 +36,7 @@ node wt.mjs status
 
 会话内（插件加载后）使用 `worktree_create` / `worktree_enter` / `worktree_exit` / `worktree_status` 等工具；被拦截时按 deny 消息的"下一步"行动，或调用 `worktree_status`。
 
-配置 sidecar：`<repo>/.dsh/worktree-guard.json`（`protected_branches`、`read_policy`、`sync.*` 等，见设计 §13）。
+配置 sidecar：**主 checkout 根**的 `<repo>/.dsh/worktree-guard.json`（`protected_branches`、`read_policy`、`branch_prefix`、`main_write_whitelist`、`sync.*`、TTL 等，snake/camel 键均可；设计 §13）。
 
 ## 开发
 

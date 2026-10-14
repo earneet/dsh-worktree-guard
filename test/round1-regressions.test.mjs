@@ -127,7 +127,7 @@ test("RG7 integration: audit sabotage does not weaken the net (blocker)", async 
   const lc = await import("../src/core/lifecycle.mjs");
   const r = await lc.create({ taskName: "alpha", cwd: d });
   wt = r.worktree;
-  cd = commonDir(wt);
+  cd = await commonDir(wt);
   // bind via rooted session
   await lc.enter({ path: wt, sessionId: "s1", cwd: wt });
   // sabotage: replace audit.jsonl (a file by now) with a DIRECTORY so appends throw

@@ -237,8 +237,8 @@ M2: remove {path, confirm_remove, delete_branch}
 ```
 
 - 绑定只来自本会话 enter；state.json 不锁新会话。
-- **审计双写**：`audit.jsonl`（便利副本，含绝对路径，分享前手工脱敏）+ DSH session 持久日志 guard 事件（append-only，模型难以篡改）。
-- 状态区整体 deny 模型写入（仅 wt 工具进程外写）——防自授/防篡改。
+- **审计**：`audit.jsonl`（含绝对路径，分享前手工脱敏）为主副本；会话侧的持久留痕依赖宿主记录 pre-execute deny 的 reason（消息文本进入会话转录）——不假设额外宿主 API（诚实边界：jsonl 在 danger-full-access 下可被绕过词法网者篡改，属 §14.3 已声明边界）。
+- 状态区整体 deny 模型写入（write 工具 + shell 词法网双面，仅 wt 工具进程外写）——防自授/防篡改。
 
 ## 10. 子代理继承
 
@@ -248,8 +248,8 @@ M2: remove {path, confirm_remove, delete_branch}
 
 - **硬规则为代码常量**：`.git`/git-common-dir 写、跨副本写、push protected、删 worktree 分支、状态区写——优先于一切配置与白名单。
 - **fail 策略**：原生插件 throw 即 fail-closed（宿主白送）；只读路径判断自身 catch 后放行（fail-open）；全局开关回退全 fail-open。不提供 hooks.json 形态（命令钩子 fail-open 语义混杂）。
-- **人闸**：authorize/allow 一律 `ask_user_question`（P4）。
-- **沙箱联动**（C9）：绑定态检测 `ctx.sandboxPolicy.resolve({session})`/`ctx.fs.sandboxMode`；danger-full-access 或提权 → deny + 告警。
+- **人闸**：authorize/allow 一律 `ask_user_question`（P4）；CLI `authorize-main` 仅接受交互式 TTY（模型 shell 非 TTY，结构级封堵词法混淆绕过）。
+- **沙箱联动**（C9，防御式实现）：宿主暴露 `ctx.fs.sandboxMode` / `ctx.sandboxPolicy.resolve` 时，绑定态 + danger-full-access → deny + 告警（worktree_* 生命周期工具豁免——P5 逃生口不可自堵）；能力缺失则无操作（P1 不假设宿主形态）。
 - **allowlist 防注入**：`.git`、裸根、`*` 拒绝；路径校验。
 
 ## 12. Windows 适配
@@ -260,7 +260,7 @@ M2: remove {path, confirm_remove, delete_branch}
 
 ## 13. 配置
 
-`<repo>/.dsh/worktree-guard.json`（sidecar，P7：DSH 配置空间）：`branch_prefix` / `worktree_parent` / `protected_branches`（默认 master,main）/ `read_policy`（warn|strict，默认 warn）/ `main_write_whitelist`（glob）/ `sync.copy_files` + `sync.symlink_dirs` + `sync.link_scan` / `allowlist_ttl_minutes` / `authorize_ttl_minutes` / `strict_git_ops`。插件级配置走 cordis Config（schemastery）。
+`<repo>/.dsh/worktree-guard.json`（sidecar，P7：DSH 配置空间）。**以主 checkout 根为基准解析**（rooted 会话的 cwd 是副本，其 `.dsh` 无 sidecar）；snake_case 与 camelCase 键均接受。已实现字段：`branch_prefix` / `worktree_parent` / `protected_branches`（默认 master,main）/ `read_policy`（warn|strict）/ `main_write_whitelist`（glob，仓库相对，经 P1 检查后放行主根写）/ `sync.copy_files` + `sync.symlink_dirs` / `allowlist_ttl_minutes` / `authorize_ttl_minutes`。~~`strict_git_ops`~~ 已移除：安全网常开是 P1 语义，提供开关等于允许放宽。插件级配置走 cordis Config（schemastery），sidecar 优先于插件默认。
 
 ## 14. 已知边界（P6 分级词汇，写进 README）
 
@@ -284,7 +284,7 @@ M2: remove {path, confirm_remove, delete_branch}
 - **M0 收尾**：C4b（工具可见性）/C8/C9/C10 四项冒烟 + 《宿主契约证据》定稿。
 - **M1（纯已实证机制，零承重假设）**：部件A 安全网 + 读域守卫（warn）+ create/enter/exit/status + 五通道沟通面 + 🌿 标题 + task-brief 交接 + 仅 rooted。
 - **M2**：remove/prune + authorize/allow（ask_user 人闸）+ 子代理继承 + merge-base + `read_policy:"strict"`。
-- **M3（可选）**：客户端侧栏（`dsh` manifest client 入口，数据源 `wt status --json`）；repo-rooted 重写后端作为实验性 profile 组合件（`extends LocalFileSystem`，与 fs-sandbox 互斥，明示取舍）。
+- **M3（可选）**：客户端侧栏（`dsh` manifest client 入口，数据源 `wt status --json`）；🌿 会话标题（需宿主 session-title API，M0 未验证故后置）；repo-rooted 重写后端作为实验性 profile 组合件（`extends LocalFileSystem`，与 fs-sandbox 互斥，明示取舍）。
 
 ## 17. 上游依赖（正式 feature request）
 

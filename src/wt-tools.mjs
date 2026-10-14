@@ -3,11 +3,36 @@
 // name, description (three-part contract §7 channel 1), string param schema,
 // async execute(args, exec). Registered by index.mjs via ctx.tools.register.
 import * as lifecycle from "./core/lifecycle.mjs";
-import { commonDir } from "./core/gitops.mjs";
+import { commonDir, listWorktrees } from "./core/gitops.mjs";
 import { bustGuardContextCache } from "./guard.mjs";
-import { updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist, DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN } from "./core/store.mjs";
+import { updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist } from "./core/store.mjs";
+import { loadSidecar } from "./core/sidecar.mjs";
+import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, AUTHORIZE_TTL_CAP_MIN, ALLOW_TTL_CAP_MIN } from "./core/constants.mjs";
 import { resolve as resolvePath } from "node:path";
 import { norm } from "./core/paths.mjs";
+
+/**
+ * m1 (round-5): lifecycle errors must still honor the §7 three-part contract —
+ * never let a raw stack-trace-shaped message reach the model.
+ */
+function guarded(text) {
+  return async (args, exec) => {
+    try {
+      return await text(args, exec);
+    } catch (err) {
+      return {
+        content: [{
+          type: "text",
+          text: `[worktree-guard] worktree 操作失败：${String(err?.message ?? err)}。\n原因：${err?.code === "ENOENT" ? "路径或 git 仓库不存在" : "前置条件不满足或参数无效"}。\n下一步：调用 worktree_status 盘点当前状态后重试。`,
+        }],
+      };
+    }
+  };
+}
+
+function textOut(lines) {
+  return { content: [{ type: "text", text: Array.isArray(lines) ? lines.join("\n") : lines }] };
+}
 
 const createDesc = `Create an isolated git worktree copy (branch worktree-<slug>) for a task. WHEN: starting a task that should not touch the main checkout. AFTER: open a NEW session rooted at the returned worktree path (that session's sandbox then anchors to the copy). The task description is stored in .dsh/task-brief.md inside the copy for the next session. Do NOT call for tasks meant to edit the main checkout directly.`;
 
@@ -36,7 +61,7 @@ function bool(name, desc) {
 
 export function toolSpecs(helpers) {
   // helpers: { sessionOf(exec) -> {id,cwd,parentSession}, config() -> repo+plugin config, askUser(...)? }
-  return [
+  const raw = [
     {
       name: "worktree_create",
       description: createDesc,
@@ -164,8 +189,10 @@ export function toolSpecs(helpers) {
       async execute(args, exec) {
         // P4: the pre-execute ask gate already confirmed with the user by the time we run.
         const s = helpers.sessionOf(exec);
-        const cd = commonDir(s.cwd);
-        const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || DEFAULT_AUTHORIZE_TTL_MIN, 240));
+        const cd = await commonDir(s.cwd);
+        const { mainRoot } = await listWorktrees(s.cwd);
+        const sidecar = await loadSidecar(mainRoot);
+        const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || sidecar.authorizeTtlMinutes || DEFAULT_AUTHORIZE_TTL_MIN, AUTHORIZE_TTL_CAP_MIN));
         const st = await updateState(cd, {
           allow_main_writes: {
             allow_main_writes: true,
@@ -185,7 +212,7 @@ export function toolSpecs(helpers) {
       parameters: { type: "object", properties: {} },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
-        const cd = commonDir(s.cwd);
+        const cd = await commonDir(s.cwd);
         await updateState(cd, { allow_main_writes: {} });
         await appendAudit(cd, { type: "revoke_main", session: s.id });
         return { content: [{ type: "text", text: "已收回主分支写授权。" }] };
@@ -205,7 +232,7 @@ export function toolSpecs(helpers) {
       },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
-        const cd = commonDir(s.cwd);
+        const cd = await commonDir(s.cwd);
         if (args.action === "list") {
           const a = await readAllowlist(cd);
           return { content: [{ type: "text", text: JSON.stringify(a.entries ?? {}, null, 2) }] };
@@ -215,13 +242,15 @@ export function toolSpecs(helpers) {
           return { content: [{ type: "text", text: "allowlist 已清空。" }] };
         }
         // add — P4 gate confirmed upstream; key is repo-absolute (round-2 fix)
-        const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || DEFAULT_ALLOW_TTL_MIN, 480));
-        const { listWorktrees } = await import("./core/gitops.mjs");
-        const { mainRoot } = listWorktrees(s.cwd);
+        const { mainRoot } = await listWorktrees(s.cwd);
+        const sidecar = await loadSidecar(mainRoot);
+        const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || sidecar.allowlistTtlMinutes || DEFAULT_ALLOW_TTL_MIN, ALLOW_TTL_CAP_MIN));
         const e = await addAllowEntry(cd, { path: args.path, reason: args.reason, ttlMinutes: ttl, grantedBy: "user-ask-gate", mainRoot });
         await appendAudit(cd, { type: "allow_add", session: s.id, ...e });
         return { content: [{ type: "text", text: `已放行 ${e.path}，${e.expires_at} 失效。` }] };
       },
     },
   ];
+  // every execute gets the §7 three-part error contract (round-5 m1)
+  return raw.map((s) => ({ ...s, execute: guarded(s.execute) }));
 }

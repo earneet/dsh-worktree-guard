@@ -89,7 +89,7 @@ test("R2-2 major: allowlist relative path keys against mainRoot, `.` rejected", 
   await writeFile(join(d, "a.txt"), "x"); sh(d, "git", ["add", "."]); sh(d, "git", ["commit", "-m", "i", "-q"]);
   const lc = await import("../src/core/lifecycle.mjs");
   wt = (await lc.create({ taskName: "alpha", cwd: d })).worktree;
-  cd = commonDir(wt);
+  cd = await commonDir(wt);
   await lc.enter({ path: wt, sessionId: "s1", cwd: wt });
 
   const e = await addAllowEntry(cd, { path: "docs", reason: "t", ttlMinutes: 5, grantedBy: "t", mainRoot: norm(d) });

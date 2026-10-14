@@ -69,10 +69,24 @@ export async function readState(commonDir) {
   return { last_active: null, bindings_ever: 0, ...s };
 }
 
-export async function updateState(commonDir, patch) {
-  const s = { ...(await readState(commonDir)), ...patch, updated_at: new Date().toISOString() };
-  await atomicWrite(join(stateRoot(commonDir), "state.json"), JSON.stringify(s, null, 2));
-  return s;
+// Per-repo mutation mutexes (round-5 M2: updateState read-modify-write could
+// "resurrect" a revoked grant on interleaving; keyed per commonDir so unrelated
+// repos never serialize against each other).
+const stateChains = new Map(); // commonDir -> Promise (one settled entry per repo; bounded)
+
+function serialized(commonDir, task) {
+  const prev = stateChains.get(commonDir) ?? Promise.resolve();
+  const p = prev.then(task);
+  stateChains.set(commonDir, p.catch(() => {}));
+  return p;
+}
+
+export function updateState(commonDir, patch) {
+  return serialized(commonDir, async () => {
+    const s = { ...(await readState(commonDir)), ...patch, updated_at: new Date().toISOString() };
+    await atomicWrite(join(stateRoot(commonDir), "state.json"), JSON.stringify(s, null, 2));
+    return s;
+  });
 }
 
 // ---- allowlist (per-path TTL grants; model-facing write of this file is denied by guard) ----
@@ -85,9 +99,7 @@ export function validateAllowlistPath(rel) {
   return null;
 }
 
-/** Serialize read-modify-write mutations (round-2 fix: concurrent adds lost updates). */
-let allowlistChain = Promise.resolve();
-
+/** readAllowlist is read-heavy; GC-on-read stays outside the mutex. */
 export async function readAllowlist(commonDir) {
   const now = Date.now();
   const a = (await readJson(join(stateRoot(commonDir), "allowlist.json"))) ?? { entries: {} };
@@ -108,7 +120,7 @@ export async function readAllowlist(commonDir) {
  * never process.cwd() (round-2 major fix). Relative `path` resolves under mainRoot.
  */
 export function addAllowEntry(commonDir, { path, reason, ttlMinutes, grantedBy, mainRoot }) {
-  const task = async () => {
+  return serialized(commonDir, async () => {
     const err = validateAllowlistPath(path);
     if (err) throw new Error(err);
     if (!mainRoot) throw new Error("mainRoot required: allowlist keys must be repo-absolute");
@@ -120,20 +132,13 @@ export function addAllowEntry(commonDir, { path, reason, ttlMinutes, grantedBy, 
     a.entries[key] = { reason: reason ?? "", granted_by: grantedBy ?? "user", granted_at: new Date().toISOString(), expires_at: expires };
     await atomicWrite(join(stateRoot(commonDir), "allowlist.json"), JSON.stringify(a, null, 2));
     return { path: key, expires_at: expires };
-  };
-  // serialize read-modify-write; surface THIS call's outcome, keep the chain alive on error
-  const p = allowlistChain.then(task);
-  allowlistChain = p.catch(() => {});
-  return p;
+  });
 }
 
 export function clearAllowlist(commonDir) {
-  const task = async () => {
+  return serialized(commonDir, async () => {
     await atomicWrite(join(stateRoot(commonDir), "allowlist.json"), JSON.stringify({ entries: {} }, null, 2));
-  };
-  const p = allowlistChain.then(task);
-  allowlistChain = p.catch(() => {});
-  return p;
+  });
 }
 
 // ---- audit (jsonl convenience copy; durable copy lives in DSH session log) ----
@@ -155,5 +160,5 @@ export function authorizeValid(state) {
   return g;
 }
 
-export const DEFAULT_AUTHORIZE_TTL_MIN = 15;
-export const DEFAULT_ALLOW_TTL_MIN = 60;
+// TTL defaults live in core/constants.mjs (single source).
+export { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN } from "./constants.mjs";

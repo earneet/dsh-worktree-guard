@@ -1,7 +1,7 @@
 // core/lifecycle.mjs — worktree lifecycle shared by native tools (wt-tools.mjs)
 // and the human CLI (wt.mjs). Pure orchestration over gitops/store; no cordis.
 import { join, resolve, dirname } from "node:path";
-import { mkdir, cp, rm, access, writeFile } from "node:fs/promises";
+import { mkdir, cp, access, writeFile, readdir, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import {
   addWorktree, removeWorktree, listWorktrees, commonDir, currentBranch,
@@ -10,18 +10,8 @@ import {
 } from "./gitops.mjs";
 import { norm } from "./paths.mjs";
 import { writeBinding, deleteBinding, readState, updateState, appendAudit, listBindings } from "./store.mjs";
-
-export const DEFAULT_WORKTREE_PARENT = ".worktrees";
-export const DEFAULT_BRANCH_PREFIX = "worktree-";
-
-export function slugify(name) {
-  return String(name ?? "")
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "task";
-}
+import { loadSidecar } from "./sidecar.mjs";
+import { DEFAULT_BRANCH_PREFIX, DEFAULT_WORKTREE_PARENT, STALE_THRESHOLD_MS } from "./constants.mjs";
 
 async function exists(p) {
   try {
@@ -32,25 +22,33 @@ async function exists(p) {
   }
 }
 
+/** Sidecar merged over defaults (snake/camel normalized; MAIN-ROOT based — the
+ *  session cwd may be a copy whose .dsh has no sidecar). */
+async function repoCfg(mainRoot) {
+  return loadSidecar(mainRoot);
+}
+
 /**
  * create: worktree under <mainRoot>/<worktreeParent>/worktree-<slug> + branch.
  * sync: copyFiles copied; symlinkDirs junctioned (win32) / symlinked.
  * Also writes plugin-owned DSH-space files (P7): task-brief + cleanup skill.
  */
 export async function create(opts) {
-  const { taskName, taskBrief, cwd, config = {} } = opts;
-  const { mainRoot, entries } = listWorktrees(cwd);
+  const { taskName, taskBrief, cwd } = opts;
+  const { mainRoot } = await listWorktrees(cwd);
   if (!mainRoot) throw new Error("不在 git 仓库中，无法创建 worktree");
+  const config = { ...(await repoCfg(mainRoot)), ...(opts.config ?? {}) };
   const slug = slugify(taskName);
-  const branch = `${config.branchPrefix ?? DEFAULT_BRANCH_PREFIX}${slug}`;
+  const prefix = config.branchPrefix ?? DEFAULT_BRANCH_PREFIX;
+  const branch = `${prefix}${slug}`;
   const parentDir = resolve(mainRoot, config.worktreeParent ?? DEFAULT_WORKTREE_PARENT);
-  const wtPath = join(parentDir, `worktree-${slug}`);
+  const wtPath = join(parentDir, `${prefix}${slug}`);
   if (await exists(wtPath)) throw new Error(`目录已存在：${wtPath}`);
-  if (branchExists(mainRoot, branch)) throw new Error(`分支已存在：${branch}`);
+  if (await branchExists(mainRoot, branch)) throw new Error(`分支已存在：${branch}`);
 
-  const base = config.baseRef ?? currentBranch(mainRoot) ?? "HEAD";
+  const base = config.baseRef ?? (await currentBranch(mainRoot)) ?? "HEAD";
   await mkdir(parentDir, { recursive: true });
-  addWorktree(mainRoot, wtPath, branch, base);
+  await addWorktree(mainRoot, wtPath, branch, base);
 
   const sync = config.sync ?? {};
   for (const rel of sync.copyFiles ?? []) {
@@ -82,21 +80,21 @@ export async function create(opts) {
   await mkdir(join(briefDir, "skills", "worktree-cleanup"), { recursive: true });
   await writeFile(join(briefDir, "skills", "worktree-cleanup", "SKILL.md"), CLEANUP_SKILL.replaceAll("{{BRANCH}}", branch).replaceAll("{{WT}}", wtPath), "utf8");
 
-  const cd = commonDir(cwd);
+  const cd = await commonDir(cwd);
   await updateState(cd, { last_active: norm(wtPath) });
   await appendAudit(cd, { type: "create", worktree: wtPath, branch, base });
   return { worktree: wtPath, branch, base, mainRoot };
 }
 
-/** enter: bind THIS session (rooted check happens at caller for tools). */
+/** enter: bind THIS session (rooted check happens at the tool layer for models). */
 export async function enter({ path, sessionId, cwd }) {
   const target = resolve(cwd, path ?? ".");
-  const { mainRoot } = listWorktrees(cwd);
-  const { entries } = listWorktrees(target);
+  const { mainRoot: mainFromCwd } = await listWorktrees(cwd);
+  const { entries } = await listWorktrees(target);
   const found = entries.find((e) => norm(e.root) === norm(target));
   if (!found) throw new Error(`不是已注册的 worktree：${target}`);
-  if (norm(target) === norm(mainRoot)) throw new Error("目标是主 checkout：绑定对象必须是副本（以副本为根开会话即可，无需 enter）");
-  const cd = commonDir(target);
+  if (norm(target) === norm(mainFromCwd)) throw new Error("目标是主 checkout：绑定对象必须是副本（以副本为根开会话即可，无需 enter）");
+  const cd = await commonDir(target);
   const binding = { worktree: norm(target), branch: found.branch ?? null, base: null, entered_at: new Date().toISOString() };
   await writeBinding(cd, sessionId, { ...binding, source: "self" });
   await updateState(cd, { last_active: binding.worktree });
@@ -106,7 +104,7 @@ export async function enter({ path, sessionId, cwd }) {
 
 /** exit: unbind; action=remove triggers removal (merged-only by default). */
 export async function exitSession({ sessionId, cwd, action = "keep", config = {} }) {
-  const cd = commonDir(cwd);
+  const cd = await commonDir(cwd);
   const mine = (await listBindings(cd)).find((b) => b.sessionId === sessionId);
   if (!mine) return { exited: false, message: "本会话没有绑定" };
   await deleteBinding(cd, sessionId); // P5: own binding never blocks own exit
@@ -124,18 +122,18 @@ export async function exitSession({ sessionId, cwd, action = "keep", config = {}
 export async function remove({ path, cwd, confirmRemove = false, deleteBranch = false, config = {}, sessionId = "cli" }) {
   if (!confirmRemove) return { removed: false, needConfirm: true, path };
   const target = resolve(cwd, path);
-  const cd = commonDir(cwd);
-  const { entries, mainRoot } = listWorktrees(cwd);
+  const cd = await commonDir(cwd);
+  const { entries, mainRoot } = await listWorktrees(cwd);
   const found = entries.find((e) => norm(e.root) === norm(target));
   if (!found) return { removed: false, message: `不是已注册的 worktree：${target}` };
 
   const branch = found.branch;
-  if (isDirty(target) && !config.force) {
+  if ((await isDirty(target)) && !config.force) {
     return { removed: false, message: "副本有未提交变更：请先提交或 stash（或配置 force）" };
   }
   const base = config.baseRef ?? "HEAD";
   if (deleteBranch && branch) {
-    const merged = isAncestor(mainRoot, branch, base);
+    const merged = await isAncestor(mainRoot, branch, base);
     if (!merged && !config.force) {
       return { removed: false, message: `分支 ${branch} 未合并进 ${base}：仅删除已合并分支（合并后重试，或配置 force）` };
     }
@@ -145,32 +143,32 @@ export async function remove({ path, cwd, confirmRemove = false, deleteBranch = 
     if (norm(b.worktree) === norm(target)) await deleteBinding(cd, b.sessionId);
   }
   await scanAndRemoveAllLinks(target, { skip: [join(target, ".git")] });
-  removeWorktree(mainRoot, target, { force: !!config.force });
-  if (deleteBranch && branch && branchExists(mainRoot, branch)) {
+  await removeWorktree(mainRoot, target, { force: !!config.force });
+  if (deleteBranch && branch && (await branchExists(mainRoot, branch))) {
     try {
-      deleteMergedBranch(mainRoot, branch);
+      await deleteMergedBranch(mainRoot, branch);
     } catch {
       if (!config.force) return { removed: true, branchKept: true, message: `副本已删；分支 ${branch} 未合并保留` };
-      git(mainRoot, ["branch", "-D", branch], { ignoreStderr: true });
+      await git(mainRoot, ["branch", "-D", branch]);
     }
   }
   await appendAudit(cd, { type: "remove", worktree: norm(target), branch, by: sessionId });
   return { removed: true, branch };
 }
 
-/** status: proof-based inventory (merge-base), binding overview, stale marks. */
+/** status: proof-based inventory (merge-base), binding overview, stale marks, orphans. */
 export async function status({ cwd, sessionId = null }) {
-  const cd = commonDir(cwd);
-  const { mainRoot, entries } = listWorktrees(cwd);
+  const cd = await commonDir(cwd);
+  const { mainRoot, entries } = await listWorktrees(cwd);
   const bindings = await listBindings(cd);
   const now = Date.now();
   const copies = [];
   for (const e of entries) {
     if (norm(e.root) === norm(mainRoot) || e.bare) continue;
-    const merged = e.branch ? isAncestor(mainRoot, e.branch, "HEAD") : false;
-    const dirty = isDirty(e.root);
+    const merged = e.branch ? await isAncestor(mainRoot, e.branch, "HEAD") : false;
+    const dirty = await isDirty(e.root);
     const boundBy = bindings.filter((b) => norm(b.worktree) === norm(e.root));
-    const staleSessions = boundBy.filter((b) => now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > 24 * 3600_000);
+    const staleSessions = boundBy.filter((b) => now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > STALE_THRESHOLD_MS);
     copies.push({
       name: worktreeNameOf(e.root), root: e.root, branch: e.branch,
       merged_into_head: merged, dirty, bound_sessions: boundBy.length,
@@ -181,22 +179,48 @@ export async function status({ cwd, sessionId = null }) {
   const rooted = mine ? norm(cwd) === norm(mine.worktree) : false;
   return {
     mode: mine ? (rooted ? "rooted" : "repo-rooted") : "unbound",
-    binding: mine, copies, stale_state_hint: mine ? null : (await readState(cd)).last_active,
-    orphan_dirs: [], // M2: dirs under .worktrees not registered as worktrees
+    binding: mine, copies,
+    stale_state_hint: mine ? null : (await readState(cd)).last_active,
+    orphan_dirs: await orphanDirs(mainRoot, entries),
   };
 }
 
-/** prune: drop bindings whose worktree AND branch are both gone, or session silent >24h. */
+/** Dirs under the worktree parent that are NOT registered worktrees. */
+async function orphanDirs(mainRoot, entries) {
+  if (!mainRoot) return [];
+  const cfg = await repoCfg(mainRoot);
+  const parent = join(mainRoot, cfg.worktreeParent ?? DEFAULT_WORKTREE_PARENT);
+  const registered = new Set(entries.map((e) => norm(e.root)));
+  let dirents;
+  try {
+    dirents = await readdir(parent, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const d of dirents) {
+    if (!d.isDirectory()) continue;
+    const p = norm(join(parent, d.name));
+    let isSymlink = false;
+    try {
+      isSymlink = (await stat(join(parent, d.name))).isSymbolicLink();
+    } catch { /* ignore */ }
+    if (!registered.has(p) && !isSymlink) out.push(p);
+  }
+  return out;
+}
+
+/** prune: drop bindings whose worktree AND branch are both gone, or session silent past threshold. */
 export async function prune({ cwd, dryRun = false }) {
-  const cd = commonDir(cwd);
+  const cd = await commonDir(cwd);
   const bindings = await listBindings(cd);
-  const { entries } = listWorktrees(cwd);
+  const { entries } = await listWorktrees(cwd);
   const roots = new Set(entries.map((e) => norm(e.root)));
   const now = Date.now();
   const dropped = [];
   for (const b of bindings) {
     const gone = !roots.has(norm(b.worktree));
-    const silent = now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > 24 * 3600_000;
+    const silent = now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > STALE_THRESHOLD_MS;
     if (gone || silent) {
       dropped.push({ sessionId: b.sessionId, worktree: b.worktree, reason: gone ? "worktree 已不存在" : "会话静默超阈" });
       if (!dryRun) await deleteBinding(cd, b.sessionId);
@@ -205,6 +229,17 @@ export async function prune({ cwd, dryRun = false }) {
   if (!dryRun && dropped.length) await appendAudit(cd, { type: "prune", dropped });
   return { dropped, dryRun };
 }
+
+export function slugify(name) {
+  return String(name ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "task";
+}
+
+export { STALE_THRESHOLD_MS };
 
 const CLEANUP_SKILL = `# worktree-cleanup
 

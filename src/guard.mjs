@@ -5,7 +5,7 @@
 // shell-side judgments self-catch to fail-open — but a DENY decision already
 // reached is returned regardless of audit failures (audit must never weaken
 // the net; adversarial round-1 blocker fix).
-import { decideWrite, decideRead, decidePwsh } from "./core/decision.mjs";
+import { decideWrite, decideRead, decidePwsh, makeContext } from "./core/decision.mjs";
 import { resolveBinding } from "./core/binding.mjs";
 import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.mjs";
 import { norm, physicalAncestorKey, classifyTarget } from "./core/paths.mjs";
@@ -32,12 +32,16 @@ export async function guardContext(cwd, { protectedBranches, branchPrefix, force
   if (!force && hit && Date.now() - hit.at < GUARD_CTX_TTL_MS) return { commonDir: cd, ctx: hit.ctx };
   const { mainRoot, entries } = await listWorktrees(cwd);
   if (!mainRoot) return null;
-  const ctx = {
+  // built via makeContext — the SAME assembler tests use (round-6: the
+  // hand-built ctx had dropped commonDir, killing the state-area deny under
+  // bare layouts). Never fork production/test context shapes.
+  const ctx = makeContext({
     mainRoot,
+    commonDir: cd,
     worktrees: entries.filter((e) => norm(e.root) !== norm(mainRoot) && !e.bare).map((e) => ({ root: e.root, name: worktreeNameOf(e.root) })),
     protectedBranches,
     branchPrefix,
-  };
+  });
   ctxCache.set(cd, { at: Date.now(), ctx });
   return { commonDir: cd, ctx };
 }
@@ -90,11 +94,11 @@ async function loadAuth(commonDir, mainRoot) {
  * Bound sessions under danger-full-access lose the structural layer entirely,
  * so the guard denies with an explicit warning instead of silently degrading.
  */
-function sandboxDenied(binding, opts, header) {
+async function sandboxDenied(binding, opts, header) {
   if (!binding || typeof opts?.sandboxModeOf !== "function") return null;
   let mode;
   try {
-    mode = opts.sandboxModeOf(header);
+    mode = await opts.sandboxModeOf(header); // may be sync or async (host-dependent)
   } catch {
     return null; // capability probe failure -> lexical net continues (P1)
   }
@@ -167,7 +171,7 @@ export async function decideToolCall(exec, opts = {}) {
   // C9: bound + danger-full-access -> deny with guidance (§11). Lifecycle tools
   // (worktree_*) are exempt — P5: the escape hatch must never be blocked by the
   // very guard the session needs to escape from.
-  const sd = !String(toolName ?? "").startsWith("worktree_") ? sandboxDenied(binding, effOpts, header) : null;
+  const sd = !String(toolName ?? "").startsWith("worktree_") ? await sandboxDenied(binding, effOpts, header) : null;
   if (sd) {
     await safeAudit(commonDir, ident.sessionId, "deny_sandbox_mode", sd.reason, {});
     return sd;

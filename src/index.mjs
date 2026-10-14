@@ -43,12 +43,15 @@ export function apply(ctx, config) {
       readPolicy: config.readPolicy,
       // C9 capability probe (design §11): hosts exposing sandbox mode get the
       // danger-full-access net; absent capability degrades to no-op (P1).
-      sandboxModeOf: (header) =>
-        typeof ctx.fs?.sandboxMode === "string"
-          ? ctx.fs.sandboxMode
-          : typeof ctx.sandboxPolicy?.resolve === "function"
-            ? ctx.sandboxPolicy.resolve({ session: { header } })?.mode
-            : undefined,
+      // Async-resilient: hosts whose resolve() returns a Promise still work.
+      sandboxModeOf: async (header) => {
+        if (typeof ctx.fs?.sandboxMode === "string") return ctx.fs.sandboxMode;
+        if (typeof ctx.sandboxPolicy?.resolve === "function") {
+          const resolved = await ctx.sandboxPolicy.resolve({ session: { header } });
+          return resolved?.mode;
+        }
+        return undefined;
+      },
     });
     if (decision.kind === "deny") return { kind: "deny", reason: decision.reason };
     if (decision.kind === "ask") return { kind: "ask", reason: decision.reason };

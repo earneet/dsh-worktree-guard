@@ -65,12 +65,15 @@ const pruneDesc = `Recycle dead bindings: sessions whose worktree/branch no long
 
 const revokeDesc = `Revoke the active authorize-main grant immediately (before its TTL expires).`;
 
-function str(name, desc, required = false) {
-  return { type: "string", description: desc, ...(required ? { required: true } : {}) };
+function str(name, desc) {
+  return { type: "string", description: desc };
 }
-// round-11 root cause: call sites pass ONE description argument — a (name, desc)
-// signature landed it in `name` and left `description: undefined`, which the
-// lossless-JSON wire projection of request/header rejects ("non-JSON-serializable").
+// round-11: call sites pass ONE description argument — a (name, desc) signature
+// landed it in `name` and left `description: undefined`, which the lossless-JSON
+// wire projection of request/header rejects ("non-JSON-serializable").
+// round-12: parameters follow STRICT standard JSON Schema — `required` is a
+// top-level name array ONLY (inline `required` in a property node is rejected
+// by the host wire subset AND by strict provider APIs — GLM 400/1210).
 function bool(desc) {
   return { type: "boolean", description: desc };
 }
@@ -84,10 +87,11 @@ export function toolSpecs(helpers) {
       parameters: {
         type: "object",
         properties: {
-          task_name: str("task slug (lowercase, hyphens)", "short task name, e.g. \"fix-login\"", true),
+          task_name: str("task slug (lowercase, hyphens)", "short task name, e.g. \"fix-login\""),
           task_brief: str("task brief", "what the next session should know; stored in .dsh/task-brief.md"),
           base_ref: str("base ref", "branch/commit to start from (default: current main branch)"),
         },
+        required: ["task_name"],
       },
       output: {
         schema: S.obj({
@@ -112,7 +116,7 @@ export function toolSpecs(helpers) {
     {
       name: "worktree_enter",
       description: enterDesc,
-      parameters: { type: "object", properties: { path: str("worktree path", "path to the worktree copy", true) } },
+      parameters: { type: "object", properties: { path: str("worktree path", "path to the worktree copy") }, required: ["path"] },
       output: {
         schema: S.obj({
           bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), error: S.err(),
@@ -195,10 +199,11 @@ export function toolSpecs(helpers) {
       parameters: {
         type: "object",
         properties: {
-          path: str("worktree path", "path to the copy", true),
+          path: str("worktree path", "path to the copy"),
           confirm_remove: bool("must be true"),
           delete_branch: bool("also delete the branch (merged only)"),
         },
+        required: ["path"],
       },
       output: {
         schema: S.obj({
@@ -238,9 +243,10 @@ export function toolSpecs(helpers) {
       parameters: {
         type: "object",
         properties: {
-          reason: str("why main needs to be written/merged", "audited, shown to the user", true),
+          reason: str("why main needs to be written/merged", "audited, shown to the user"),
           ttl_minutes: { type: "number", description: `TTL minutes (default ${DEFAULT_AUTHORIZE_TTL_MIN})` },
         },
+        required: ["reason"],
       },
       output: {
         schema: S.obj({ authorized: S.bool(true), expiresAt: S.str(true), error: S.err() }, ["authorized", "expiresAt"]),

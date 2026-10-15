@@ -25,8 +25,17 @@ function noUndefinedKeys(o, path = "") {
 }
 
 test("R11-1 every tool wire projection {name,description,parameters} is lossless JSON", () => {
+  const checkReq = (node, path) => {
+    if (node && typeof node === "object") {
+      if (node.type !== "object" && "required" in node && Array.isArray(node.required) === false) {
+        throw new Error(`inline required on ${node.type} at ${path} (strict provider APIs reject it: GLM 400/1210)`);
+      }
+      for (const [k, v] of Object.entries(node)) if (v && typeof v === "object") checkReq(v, `${path}.${k}`);
+    }
+  };
   for (const s of toolSpecs({})) {
     noUndefinedKeys(s.parameters, `${s.name}.parameters`);
+    checkReq(s.parameters, `${s.name}.parameters`);
     const proj = { name: s.name, description: s.description, parameters: structuredClone(s.parameters) };
     assert.ok(lossless(proj), `${s.name} must survive JSON round-trip losslessly`);
     assert.equal(typeof s.name, "string");

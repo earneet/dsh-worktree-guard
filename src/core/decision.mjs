@@ -195,10 +195,26 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
       return deny("pwsh", summarizeOf(), "远程删除 worktree 分支", "分支删除由收尾流程在本地执行（仅删已合并分支）。");
     }
   }
-  // 2) bare `git push` while ON a protected branch (zcode lineage)
+  // 2) implicit `git push` while ON a protected branch (zcode lineage).
+  //    round-12 usability fix: only pushes WITHOUT an explicit refspec can move
+  //    the current branch — `git push origin v0.2.0` (a tag) or
+  //    `git push origin worktree-x` cannot touch master and must stay open.
+  //    HEAD/@ refspecs DO resolve to the current branch and stay netted.
   if (mPush && currentBranchName && prot.includes(currentBranchName)) {
-    if (!authorized) {
-      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，裸 push 等同推送主干`, "请显式指定目标分支，或走授权流程。");
+    const seg = cmd.slice(mPush.index + mPush[0].length).split(/[\n\r;&|]/)[0];
+    const toks = seg.split(/\s+/).filter((t) => t && !t.startsWith("-"));
+    const effective = toks.length <= 1 ? (toks[0] ?? "") : toks.slice(1).join(" "); // [0]=remote
+    const tagsOnly = /--tags\b/.test(seg) && toks.length <= 1; // --tags alone cannot move a branch
+    const implicit = !tagsOnly && (effective === "" || /^[a-z][a-z0-9+.-]*:\/\//i.test(effective) || effective === "origin" || effective === "." || /--all\b|--mirror\b/.test(seg));
+    // HEAD as the DESTINATION resolves to the current (protected) branch; HEAD as
+    // a mere source (`HEAD:worktree-x`) updates another branch and is safe.
+    const dstMovesCurrent = toks.slice(1).some((tk) => {
+      const dst = tk.includes(":") ? tk.split(":").pop() : tk;
+      return dst === "HEAD" || dst === "@";
+    });
+    const pushesCurrent = implicit || dstMovesCurrent;
+    if (!authorized && pushesCurrent) {
+      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，无显式 refspec 的 push 等同推送主干`, "请显式指定目标分支/标签，或走授权流程。");
     }
   }
   // 3) any `git branch` command touching a worktree branch token — decoy-first

@@ -89,3 +89,23 @@ test("R12-1 state-area net requires .git context; plugin's own repo path is allo
     assert.equal(decidePwsh({ command: cmd }, CTX12, null).kind, "deny", `must deny: ${cmd}`);
   }
 });
+
+// round-12 usability fix: only implicit pushes (no refspec, or HEAD/@) can move
+// the current protected branch. Tag and named-branch refspecs stay open —
+// "model cannot even push a release tag" forced users into the loop for no
+// safety gain (a tag ref can never update master).
+test("R12-2 push refspec precision while ON a protected branch", () => {
+  const BIND12 = { worktree: P("C:/repo/.worktrees/worktree-x"), branch: "worktree-x" };
+  const onProt = { command: "", currentBranchName: "master" };
+  const t = (cmd) => decidePwsh({ ...onProt, command: cmd }, CTX12, BIND12, {});
+  // implicit forms -> deny
+  for (const cmd of ["git push", "git push origin", "git push https://github.com/x/y.git", "git push origin HEAD", "git push origin @:master"]) {
+    assert.equal(t(cmd).kind, "deny", `must deny: ${cmd}`);
+  }
+  // explicit non-current refs -> allow (tags, other branches)
+  for (const cmd of ["git push origin v0.2.0", "git push origin worktree-x", "git push origin --tags", "git push origin HEAD:worktree-x"]) {
+    assert.equal(t(cmd).kind, "allow", `must allow: ${cmd}`);
+  }
+  // explicit protected refspec still denied by rule 1
+  assert.equal(t("git push origin master").kind, "deny");
+});

@@ -1,6 +1,7 @@
-# dsh-worktree-guard bundle patch: mount the worktree-guard cordis plugin.
-# Compose into a DSH profile via the package.json "dsh" manifest field.
-plugins:
-  worktree-guard:
-    $if: ctx.worktreeGuard?.enable ?? true
-    $ref: "npm:dsh-worktree-guard"
+# dsh-worktree-guard bundle patch: mount the worktree-guard cordis plugin
+# (top-level array of loader patch entries — the DSH bundle contract).
+# Enable/disable is managed by the plugin manager on this entry; runtime
+# config (protectedBranches / readPolicy) goes through the plugin Config.
+- insert:
+    - id: worktree-guard
+      name: dsh-worktree-guard

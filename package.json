@@ -1,6 +1,6 @@
 {
   "name": "dsh-worktree-guard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Git worktree guard for DeepSeek Harness: session-rooted isolation, always-on git-layer safety net, mechanical human gate for main-branch authorization",
   "type": "module",
   "license": "MIT",

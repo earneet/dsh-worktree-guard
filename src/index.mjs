@@ -5,6 +5,9 @@
 // Shape follows the dsh-tool-todo lineage: export { name, inject, Config, apply }.
 // Sidecar (<repo>/.dsh/worktree-guard.json) is merged INSIDE the guard (B1 fix),
 // so repo-level read_policy/protected_branches/branchPrefix reach the net.
+// Config MUST be a schemastery Schema — cordis resolveConfig calls .validate on
+// it; a plain object fails plugin activation (found via real dsh install).
+import z from "@deepseek-ai/schemastery";
 import { decideToolCall, takePendingMark } from "./guard.mjs";
 import { toolSpecs } from "./wt-tools.mjs";
 import { standingLine, sessionStartText } from "./notices.mjs";
@@ -13,11 +16,11 @@ import { resolveBinding } from "./core/binding.mjs";
 export const name = "worktree-guard";
 export const inject = ["tools"];
 
-export const Config = {
-  enable: { type: "boolean", default: true },
-  protectedBranches: { type: "array", default: ["master", "main"] },
-  readPolicy: { type: "string", default: "warn" }, // warn | strict (sidecar may override)
-};
+export const Config = z.object({
+  enable: z.boolean().default(true),
+  protectedBranches: z.array(z.string()).default(["master", "main"]),
+  readPolicy: z.string().default("warn"), // warn | strict (sidecar may override)
+});
 
 export { loadSidecar as repoConfig } from "./core/sidecar.mjs";
 

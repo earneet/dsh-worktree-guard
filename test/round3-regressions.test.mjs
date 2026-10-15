@@ -2,10 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decidePwsh, makeContext } from "../src/core/decision.mjs";
+import { MAIN, WT_A, COMMON } from "./helpers/fixtures.mjs";
 
-const MAIN = "F:/repo";
-const WT_A = "F:/repo/.worktrees/worktree-alpha";
-const ctx = makeContext({ mainRoot: MAIN, commonDir: "F:/repo/.git", worktrees: [{ root: WT_A, name: "worktree-alpha" }] });
+const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "worktree-alpha" }] });
 const bound = { worktree: WT_A, branch: "worktree-alpha" };
 
 test("R3-1 blocker: relative-path state.json self-grant denied (Set-Content forms)", () => {

@@ -10,11 +10,8 @@ import { decideToolCall } from "../src/guard.mjs";
 import { addAllowEntry, readAllowlist } from "../src/core/store.mjs";
 import { commonDir } from "../src/core/gitops.mjs";
 import { norm } from "../src/core/paths.mjs";
+import { MAIN, WT_A, WT_B, COMMON } from "./helpers/fixtures.mjs";
 
-const MAIN = "F:/repo";
-const WT_A = "F:/repo/.worktrees/worktree-alpha";
-const WT_B = "F:/repo/.worktrees/worktree-beta";
-const COMMON = "F:/repo/.git";
 const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "worktree-alpha" }, { root: WT_B, name: "worktree-beta" }] });
 const bound = { worktree: WT_A, branch: "worktree-alpha" };
 

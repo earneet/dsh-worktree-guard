@@ -15,13 +15,14 @@ import { isDirtyForLifecycle } from "../src/core/gitops.mjs";
 import { apply } from "../src/index.mjs";
 import { commonDir } from "../src/core/gitops.mjs";
 import { readBinding } from "../src/core/store.mjs";
+import { P } from "./helpers/fixtures.mjs";
 
 const CTX = {
-  mainRoot: "C:/repo", commonDir: "C:/repo/.git",
-  worktrees: [{ root: "C:/repo/.worktrees/worktree-x", name: "worktree-x" }],
+  mainRoot: P("C:/repo"), commonDir: P("C:/repo/.git"),
+  worktrees: [{ root: P("C:/repo/.worktrees/worktree-x"), name: "worktree-x" }],
   protectedBranches: ["master", "main"], branchPrefix: "worktree-",
 };
-const BIND = { worktree: "C:/repo/.worktrees/worktree-x", branch: "worktree-x" };
+const BIND = { worktree: P("C:/repo/.worktrees/worktree-x"), branch: "worktree-x" };
 const d = (command) => decidePwsh({ command, currentBranchName: "worktree-x" }, CTX, BIND, {});
 const isDeny = (r) => r.kind === "deny";
 

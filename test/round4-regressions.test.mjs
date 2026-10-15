@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decidePwsh, makeContext } from "../src/core/decision.mjs";
 import { fileURLToPath } from "node:url";
+import { MAIN, WT_A, COMMON } from "./helpers/fixtures.mjs";
 
-const ctx = makeContext({ mainRoot: "F:/repo", commonDir: "F:/repo/.git", worktrees: [{ root: "F:/repo/.worktrees/worktree-alpha", name: "a" }] });
-const bound = { worktree: "F:/repo/.worktrees/worktree-alpha", branch: "worktree-alpha" };
+const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "a" }] });
+const bound = { worktree: WT_A, branch: "worktree-alpha" };
 
 test("R4-1 guard-module rule: precise context, no user-file false positives", () => {
   // OUR modules (src/ or worktree-guard/ context, or the CLI entry) -> deny

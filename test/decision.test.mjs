@@ -5,12 +5,9 @@ import { norm, stripExtendedLengthPrefix, classifyTarget, isDotGitPath, extractA
 import { decideWrite, decideRead, decidePwsh, makeContext } from "../src/core/decision.mjs";
 import { validateAllowlistPath, authorizeValid } from "../src/core/store.mjs";
 import { resolveBinding } from "../src/core/binding.mjs";
+import { MAIN, WT_A, WT_B, COMMON, IS_WIN } from "./helpers/fixtures.mjs";
 
-// fixture world: main + two copies under main/.worktrees (default layout)
-const MAIN = "F:/repo";
-const WT_A = "F:/repo/.worktrees/worktree-alpha";
-const WT_B = "F:/repo/.worktrees/worktree-beta";
-const COMMON = "F:/repo/.git";
+// fixture world (platform-portable): main + two copies under main/.worktrees
 const ctx = makeContext({
   mainRoot: MAIN,
   commonDir: COMMON,
@@ -20,7 +17,7 @@ const bound = { worktree: WT_A, branch: "worktree-alpha" };
 
 // ---------- paths ----------
 
-test("norm: separator/case/\\\\?\\ normalization (win32 expectations on win32 host)", () => {
+test("norm: separator/case/\\\\?\\ normalization (win32-only expectations)", { skip: !IS_WIN }, () => {
   assert.equal(norm("F:\\Repo\\SRC", "F:/x"), norm("f:/repo/src"));
   assert.equal(stripExtendedLengthPrefix("\\\\?\\C:\\a\\b"), "C:\\a\\b");
   assert.equal(stripExtendedLengthPrefix("\\\\?\\UNC\\server\\share"), "\\\\server\\share");
@@ -39,7 +36,7 @@ test("dotGit: segment match only, .github safe; common-dir containment counted",
   assert.ok(isDotGitPath(norm(COMMON + "/worktree-guard/state.json"), COMMON));
 });
 
-test("extractAbsolutePaths: catches plain absolute literals", () => {
+test("extractAbsolutePaths: catches plain absolute literals", { skip: !IS_WIN }, () => {
   const got = extractAbsolutePaths(`git -C F:\\repo\\ run x && echo F:/repo/y`);
   assert.ok(got.some((p) => norm(p).startsWith(norm(MAIN))));
 });

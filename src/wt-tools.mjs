@@ -68,7 +68,10 @@ const revokeDesc = `Revoke the active authorize-main grant immediately (before i
 function str(name, desc, required = false) {
   return { type: "string", description: desc, ...(required ? { required: true } : {}) };
 }
-function bool(name, desc) {
+// round-11 root cause: call sites pass ONE description argument — a (name, desc)
+// signature landed it in `name` and left `description: undefined`, which the
+// lossless-JSON wire projection of request/header rejects ("non-JSON-serializable").
+function bool(desc) {
   return { type: "boolean", description: desc };
 }
 

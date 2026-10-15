@@ -60,7 +60,9 @@ DSH 的机制事实（全部源码实证，`C:\Users\Administrator\.dsh\profiles
 | `tools.register(defineTool)`；项目 `.dsh/skills` 自动发现 | ✅ | worktree_* 工具 + 副本自带收尾技能 |
 | header 自带 `parentSession` | ✅ | 子代理继承无需 DB |
 | 原生插件 throw = fail-closed | ✅ | fail 语义白送 |
-| `agent/disposed`（C8）/ 沙箱模式可监听（C9）/ `sessionController.create·openWorkspacePath`（C10） | ⚠️ 待冒烟 | 均有降级路径，不改变形态 |
+| `agent/disposed`（C8） | ✅ | Event 目录实证（emit，payload `{agent}`）；round-8 落地：disposed 时为本会话绑定盖 `resolved_at`（不删——resume 友好，prune 终删） |
+| 沙箱模式可监听（C9） | ✅ | `ctx.fs.sandboxMode` / `ctx.sandboxPolicy.resolve` 能力探测已实现（R5-2 回归） |
+| 编程式以指定 cwd 建会话（C10） | ⚠️ 能力面已实证 | Service 目录见 `agentLoop.create(id, options, meta: Pick<SessionHeader,'cwd'>)` 与 `workspaceController.create`；实际调用冒烟仍未做，rooted 引导文案为当前形态 |
 | 宿主多可写根 / 原生 worktree 子系统 | ❌ 不存在 | rooted 是唯一结构路径 |
 
 ## 4. 架构
@@ -135,7 +137,7 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 
 - 判域与 write 行同源：归一化目标 vs 主根/兄弟副本前缀（词法启发级）。
 - **默认 `warn`**：放行 + §7 通道 5 溯源标记——保留排障自由（对比副本差异、查 `.git`），消除静默误读（P3）。
-- **`strict`（可配 `read_policy`）**：主根读直接 deny + "你在副本 <W> 中，用相对路径"——读重试廉价、一步终止，可用性代价可控；兄弟副本与 `.git` 读仍放行。
+- **`strict`（可配 `read_policy`）**：主根读直接 deny + "你在副本 <W> 中，用解析到本副本内的路径"——读重试廉价、一步终止，可用性代价可控；兄弟副本与 `.git` 读仍放行。
 - `enter` 提示与常驻状态行列明"当前读域基准 = 副本"。
 
 > 谱系注记：zcode v0.4.1 "读无害"结论的前提是其 read 被重写回副本（其 A09 用例：Read main → rewrite）——允许跨副本读是给排障的自由，而主根读根本到不了主根。本设计无重写能力，移植该结论必须补读域判断，否则"读无害"退化为"读哪都无害"。
@@ -166,20 +168,20 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 - ① rooted 副本会话（检测到绑定）：
 
 ```
-[worktree-guard] 本会话根是 worktree 副本（分支 <branch>；主 checkout 位于 <主根>）。
-守则：读写一律用相对路径（本目录即根）；收尾前不要写主 checkout / 其他副本。
-任务背景：见 .dsh/task-brief.md。收尾：worktree_status（给出已合并证明与清理步骤）→ 用户授权 → 完成。
+[worktree-guard] 本会话根是 worktree 副本（分支 <branch>；主 checkout 与其他副本勿写）。
+守则：读写路径必须解析到本副本内（本目录即根）；合并/push 主干须经用户授权工具，不要直接 git push/checkout 主干。
+任务背景：见 .dsh/task-brief.md。收尾：worktree_status（合并证明+清理步骤）→ 用户同意后 worktree_authorize_main 合并回主干 → worktree_exit remove 清理 → 完成。
 ```
 
-- ② 主根会话 + stale 绑定：提示"上会话副本未收尾，调 worktree_status 盘点"。
+- ② 主根会话 + stale 绑定：提示"上会话副本未收尾，调 worktree_status 盘点并报告用户清理建议"。
 - ③ 干净状态：**零注入**（P1 不加噪音）。
 
 **通道 4 — deny 三段式**（拦了什么 / 为什么 / 下一步精确动作）：
 
 ```
 [worktree-guard] 已阻止 <write/pwsh …>：<目标/命令摘要>。
-原因：<落入主 checkout|其他副本|.git|push 受保护分支|…>。
-下一步：<精确替代动作>。例：用相对路径写本副本；或调用 worktree_status 查看当前绑定。
+原因：<落入主 checkout|其他副本|.git|push 受保护分支|…>（效果导向措辞，不出现检测维度）。
+下一步：<精确替代动作>。例：用解析到本副本内的路径写入；或调用 worktree_status 查看当前绑定。
 ```
 
 **通道 5 — 读域标记**（§6.1 warn）：
@@ -264,7 +266,7 @@ M2: remove {path, confirm_remove, delete_branch}
 
 ## 14. 已知边界（P6 分级词汇，写进 README）
 
-1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag/诱饵变体、push 远程删除、**shell 相对路径写守卫状态区**（`Set-Content ../../.git/worktree-guard/...`、guard 模块 import、authorize 动词）已拦（对抗审查 R1–R3 修复）；rooted 下 shell 沙箱兜底（写主根=物理拒绝），repo-rooted 接不住（故后置）。
+1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag/诱饵变体、push 远程删除、**shell 相对路径写守卫状态区**（`Set-Content ../../.git/worktree-guard/...`、guard 模块 import、authorize 动词）已拦（对抗审查 R1–R3 修复）；**嵌套执行器（`cmd /c`、`pwsh -Command`、`iex`）、引号/反引号拼接（`git pus""h`）、子表达式 `$()`、多行脚本、`git config alias`+别名调用经 round-8 归一化 seam 拦截**（`alias` 残余与 env 变量同类，仍属词法边界）；rooted 下 shell 沙箱兜底（写主根=物理拒绝；注意 **push 是网络操作，无沙箱兜底，词法网是唯一防线**），repo-rooted 接不住（故后置）。
 2. 读域守卫同属**词法启发**：junction/8.3 别名可绕过判域；strict 误判代价是多余 deny + 重试，不是错误放行——方向安全。
 3. danger-full-access 下的一切守卫 = **纯纪律级**。
 4. MCP 工具/第三方进程写盘不在范围——靠纪律 + 会话根对冲。

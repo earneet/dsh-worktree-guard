@@ -190,7 +190,8 @@ test("RG12 session-start text: clean repo -> null; bound session -> guidance", a
   const lc = await import("../src/core/lifecycle.mjs");
   await lc.enter({ path: wt, sessionId: "s2", cwd: wt });
   const t = await sessionStartText({ cwd: wt, sessionId: "s2" });
-  assert.match(t, /相对路径/);
+  assert.match(t, /本副本/);
+  assert.match(t, /worktree_authorize_main/); // copy review: 收尾链必须点名授权工具
   assert.match(t, /task-brief/);
 });
 

@@ -4,15 +4,23 @@
   "description": "Git worktree guard for DeepSeek Harness: session-rooted isolation, always-on git-layer safety net, mechanical human gate for main-branch authorization",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/earneet/dsh-worktree-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/earneet/dsh-worktree-guard/issues"
+  },
+  "homepage": "https://github.com/earneet/dsh-worktree-guard#readme",
   "main": "src/index.mjs",
   "bin": { "wt": "wt.mjs" },
-  "files": ["src", "wt.mjs", "cordis.patch.yml", "README.md"],
+  "files": ["src", "wt.mjs", "cordis.patch.yml", "README.md", "LICENSE"],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.mjs\""
   },
   "engines": { "node": ">=20" },
   "dsh": {
     "bundle": { "patch": "cordis.patch.yml" }
   },
-  "keywords": ["dsh", "deepseek-harness", "git", "worktree", "guard"]
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "git", "worktree", "guard"]
 }

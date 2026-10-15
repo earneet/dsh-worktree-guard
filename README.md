@@ -26,7 +26,17 @@
 
 ## 安装与使用
 
-DSH 插件（package.json `dsh.bundle.patch` → [cordis.patch.yml](cordis.patch.yml)），加入 profile 组合加载。
+DSH 插件（package.json `dsh.bundle.patch` → [cordis.patch.yml](cordis.patch.yml)）。已发布到 npm 后：
+
+```bash
+# 安装到 profile（CLI）
+dsh plugin --profile web add dsh-worktree-guard
+# 或 GUI 设置 → 插件 → 安装 bundle：dsh-worktree-guard
+# 验证已挂载（应看到 worktree-guard 条目）
+dsh web --dump-config
+```
+
+安装后变化：未绑定会话零注入、行为不变；`worktree_*` 工具出现在会话中；git 误毁防护（push 主干/删 worktree 分支/写 `.git` 等）常开生效。
 
 ```bash
 # CLI（与原生工具同一 core）
@@ -36,7 +46,7 @@ node wt.mjs status
 
 会话内（插件加载后）使用 `worktree_create` / `worktree_enter` / `worktree_exit` / `worktree_status` 等工具；被拦截时按 deny 消息的"下一步"行动，或调用 `worktree_status`。
 
-配置 sidecar：**主 checkout 根**的 `<repo>/.dsh/worktree-guard.json`（`protected_branches`、`read_policy`、`branch_prefix`、`main_write_whitelist`、`sync.*`、TTL 等，snake/camel 键均可；设计 §13）。
+配置 sidecar：**主 checkout 根**的 `<repo>/.dsh/worktree-guard.json`（`protected_branches`、`read_policy`、`branch_prefix`、`main_write_whitelist`、`sync.*`、TTL 等，snake/camel 键均可；设计 §13）。注意 `main_write_whitelist` 为 **glob 全匹配**（如 `"docs/*"`、`"gen/**"`）；目录前缀不带通配符（如 `"docs/"`）不会命中。
 
 ## 开发
 

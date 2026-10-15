@@ -105,7 +105,7 @@ async function sandboxDenied(binding, opts, header) {
   if (mode === "danger-full-access") {
     return {
       kind: "deny",
-      reason: `[worktree-guard] 已阻止工具调用。\n原因：会话沙箱处于 danger-full-access，结构性隔离已失效；绑定会话（${binding.worktree}）在此模式下仅剩纯纪律级防线。\n下一步：将沙箱模式切回 workspace-write / read-only 后继续；确需全权操作请先 worktree_exit 解绑。`,
+      reason: `[worktree-guard] 已阻止工具调用。\n原因：会话沙箱处于 danger-full-access，为防结构性绕过，绑定会话（${binding.worktree}）在此模式下所有非 worktree_* 工具均被拒绝。\n下一步：将沙箱模式切回 workspace-write 后继续；确需全权操作请先调用 worktree_exit 解绑。`,
     };
   }
   return null;
@@ -121,7 +121,7 @@ export async function decideToolCall(exec, opts = {}) {
   if (GATED_TOOLS.has(toolName)) {
     return {
       kind: "ask",
-      reason: `[worktree-guard] ${toolName} 需要用户确认后才会执行（P4 机械人闸）：请在用户明确同意后调用。`,
+      reason: `[worktree-guard] ${toolName} 已挂起，等待用户在界面上确认。仅在用户本轮明确同意后调用；每次调用都会再次询问用户。`,
     };
   }
 

@@ -31,8 +31,8 @@ export async function sessionStartText({ cwd, sessionId, parentSession = null })
   if (binding && isRooted(cwd, binding)) {
     return [
       `${PREFIX} 本会话根是 worktree 副本（分支 ${binding.branch ?? "?"}；主 checkout 与其他副本勿写）。`,
-      `守则：读写一律用相对路径（本目录即根）；收尾前不要写主 checkout / 其他副本。`,
-      `任务背景：见 .dsh/task-brief.md。收尾：worktree_status（给出已合并证明与清理步骤）→ 用户授权 → 完成。`,
+      `守则：读写路径必须解析到本副本内（本目录即根）；合并/push 主干须经用户授权工具，不要直接 git push/checkout 主干。`,
+      `任务背景：见 .dsh/task-brief.md。收尾：worktree_status（合并证明+清理步骤）→ 用户同意后 worktree_authorize_main 合并回主干 → worktree_exit remove 清理 → 完成。`,
     ].join("\n");
   }
   if (!binding) {
@@ -40,7 +40,7 @@ export async function sessionStartText({ cwd, sessionId, parentSession = null })
     const last = st?.last_active ? Date.parse(st.last_active) : NaN;
     // informational only if the last copy activity is stale, not merely recent
     if (Number.isFinite(last) && Date.now() - last > STALE_THRESHOLD_MS) {
-      return `${PREFIX} 上会话副本长期未收尾（${st.last_active}）：调 worktree_status 盘点。`;
+      return `${PREFIX} 上会话副本长期未收尾（${st.last_active}）：调 worktree_status 盘点，将未收尾副本与清理建议报告用户。`;
     }
   }
   return null;

@@ -95,6 +95,44 @@ export async function isDirty(cwd) {
   return out.length > 0;
 }
 
+/**
+ * Dirty check for lifecycle decisions (remove/status). Round-7 fix (report
+ * finding #2): UNTRACKED plugin-owned .dsh/ files (task-brief, cleanup skill
+ * — P7 config space) must not make a freshly created copy "dirty"; tracked
+ * modifications (user-committed then edited) still count. Layout-independent,
+ * unlike per-worktree info/exclude which git resolves to the SHARED file.
+ * Round-8: UNTRACKED symlinks/junctions (sync.symlink_dirs output, or rogue
+ * links) are likewise ignored — scanAndRemoveAllLinks strips them before
+ * removal anyway, and a link is never user file content.
+ */
+export async function isDirtyForLifecycle(cwd) {
+  const out = (await git(cwd, ["status", "--porcelain"])).trim();
+  if (!out) return false;
+  const { lstat } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const untrackedIsLink = async (rel) => {
+    try {
+      return (await lstat(join(cwd, rel))).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+  let dirty = false;
+  for (const l of out.split("\n")) {
+    if (dirty) break;
+    if (!l.startsWith("??")) {
+      dirty = true;
+      break;
+    }
+    const rel = l.slice(3).replace(/\/+$/, "");
+    const relNorm = rel.replace(/\\/g, "/");
+    if (relNorm === ".dsh" || relNorm.startsWith(".dsh/")) continue; // porcelain may collapse to `?? .dsh/`
+    if (await untrackedIsLink(rel)) continue; // stripped before removal — not content
+    dirty = true;
+  }
+  return dirty;
+}
+
 /** Directory basename used as the copy's short name. */
 export function worktreeNameOf(root) {
   const parts = norm(root).split("/");

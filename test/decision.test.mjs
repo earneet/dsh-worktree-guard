@@ -93,7 +93,7 @@ test("R02 bound: main read in warn -> allow + origin mark (P3)", () => {
 test("R03 bound: main read in strict -> deny with relative-path next-step", () => {
   const d = decideRead(MAIN + "/a.ts", WT_A, ctx, bound, { readPolicy: "strict" });
   assert.equal(d.kind, "deny");
-  assert.match(d.reason, /相对路径/);
+  assert.match(d.reason, /本副本/);
 });
 test("R04 other copy / .git reads stay open for troubleshooting", () => {
   assert.equal(decideRead(WT_B + "/a.ts", WT_A, ctx, bound).kind, "allow");

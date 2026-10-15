@@ -88,7 +88,7 @@ test("R5-2 C9: bound + danger-full-access denies non-lifecycle tools; worktree_*
 
 test("R5-3 channel 3 honors parentSession (inherited rooted session gets guidance)", async () => {
   const child = await sessionStartText({ cwd: wt, sessionId: "sub-1", parentSession: "s1" });
-  assert.match(child, /相对路径/);
+  assert.match(child, /本副本/);
 });
 
 test("R5-4 stale hint is silent right after create (fresh last_active)", async () => {

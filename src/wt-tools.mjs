@@ -38,11 +38,11 @@ const createDesc = `Create an isolated git worktree copy (branch worktree-<slug>
 
 const enterDesc = `Bind the CURRENT session to a worktree copy. Only meaningful when this session's working directory is already the worktree (rooted); a repo-root session will be refused with guidance. Call worktree_status first if unsure.`;
 
-const exitDesc = `Unbind the current session from its worktree. action:"keep" keeps the copy; action:"remove" also removes it (merged branches only) — the always-safe way to finish. Your own binding never blocks your own exit.`;
+const exitDesc = `Unbind the current session from its worktree. action:"keep" keeps the copy; action:"remove" also removes it and deletes its branch when merged into base — the always-safe way to finish (a dirty copy is still refused; guard-owned .dsh/ files and links never count as dirty). Your own binding never blocks your own exit.`;
 
-const statusDesc = `Worktree inventory and binding overview — the FIRST thing to call after being blocked by worktree-guard, or before finishing a task. Reports mode (rooted/repo-rooted/unbound), per-copy merged-into-HEAD proof (git merge-base --is-ancestor), dirty state, stale bindings, and cleanup steps.`;
+const statusDesc = `Worktree inventory and binding overview — the FIRST thing to call after being blocked by worktree-guard, or before finishing a task. Reports mode (rooted / repo-rooted / unbound), per-copy merged-into-HEAD proof, dirty state, stale bindings, and cleanup steps. unbound = a normal session with no copy bound: nothing to do here.`;
 
-const authorizeDesc = `Authorize writes/merge to the protected main branch for a short TTL (default 15 minutes). REQUIRES the user to confirm interactively — the model CANNOT pass this gate by itself; call it ONLY after the user explicitly agreed, repeated calls will be asked again. Provide a clear reason.`;
+const authorizeDesc = `Authorize writes/merge to the protected main branch for a short TTL (default 15 minutes). REQUIRES the user to confirm interactively — the model CANNOT pass this gate by itself; call it ONLY after the user explicitly agreed. Each call re-prompts the user. Provide a clear reason.`;
 
 const allowDesc = `Temporarily allow ONE path pattern past the guard (TTL, default 60 minutes). REQUIRES interactive user confirmation — the model cannot pass this gate alone. Dangerous patterns (.git, bare root, *) are rejected.`;
 
@@ -84,7 +84,8 @@ export function toolSpecs(helpers) {
             text: [
               `已创建副本：${r.worktree}`,
               `分支：${r.branch}（基于 ${r.base}）`,
-              `下一步：以副本为根新开会话（推荐），或继续本会话并遵守相对路径纪律。`,
+              `下一步（推荐）：以副本为根新开会话（该会话沙箱自动锚定副本）。`,
+              `若继续本会话：本会话未绑定副本，写文件务必用指向副本内的绝对路径——相对路径会落到主 checkout。`,
               `任务简报已写入 ${r.worktree}/.dsh/task-brief.md`,
             ].join("\n"),
           }],
@@ -112,7 +113,7 @@ export function toolSpecs(helpers) {
         return {
           content: [{
             type: "text",
-            text: `已绑定（rooted）：本会话根 = 副本 ${binding.worktree}。读写一律相对路径。`,
+            text: `已绑定（rooted）：本会话根 = 副本 ${binding.worktree}。读写路径必须解析到本副本内。`,
           }],
         };
       },

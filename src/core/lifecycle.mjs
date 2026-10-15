@@ -5,7 +5,7 @@ import { mkdir, cp, access, writeFile, readdir, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import {
   addWorktree, removeWorktree, listWorktrees, commonDir, currentBranch,
-  isAncestor, deleteMergedBranch, branchExists, isDirty, scanAndRemoveAllLinks,
+  isAncestor, deleteMergedBranch, branchExists, isDirtyForLifecycle, scanAndRemoveAllLinks,
   worktreeNameOf, git,
 } from "./gitops.mjs";
 import { norm } from "./paths.mjs";
@@ -128,7 +128,7 @@ export async function remove({ path, cwd, confirmRemove = false, deleteBranch = 
   if (!found) return { removed: false, message: `不是已注册的 worktree：${target}` };
 
   const branch = found.branch;
-  if ((await isDirty(target)) && !config.force) {
+  if ((await isDirtyForLifecycle(target)) && !config.force) {
     return { removed: false, message: "副本有未提交变更：请先提交或 stash（或配置 force）" };
   }
   const base = config.baseRef ?? "HEAD";
@@ -143,7 +143,11 @@ export async function remove({ path, cwd, confirmRemove = false, deleteBranch = 
     if (norm(b.worktree) === norm(target)) await deleteBinding(cd, b.sessionId);
   }
   await scanAndRemoveAllLinks(target, { skip: [join(target, ".git")] });
-  await removeWorktree(mainRoot, target, { force: !!config.force });
+  // Round-7: the isDirtyForLifecycle gate above is the authoritative check —
+  // if it passed, the only possible untracked files are plugin-owned .dsh/
+  // ones, which git's own untracked check would still refuse. Force the
+  // git-level removal; genuinely dirty copies were already refused.
+  await removeWorktree(mainRoot, target, { force: true });
   if (deleteBranch && branch && (await branchExists(mainRoot, branch))) {
     try {
       await deleteMergedBranch(mainRoot, branch);
@@ -166,7 +170,7 @@ export async function status({ cwd, sessionId = null }) {
   for (const e of entries) {
     if (norm(e.root) === norm(mainRoot) || e.bare) continue;
     const merged = e.branch ? await isAncestor(mainRoot, e.branch, "HEAD") : false;
-    const dirty = await isDirty(e.root);
+    const dirty = await isDirtyForLifecycle(e.root);
     const boundBy = bindings.filter((b) => norm(b.worktree) === norm(e.root));
     const staleSessions = boundBy.filter((b) => now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > STALE_THRESHOLD_MS);
     copies.push({
@@ -246,7 +250,7 @@ const CLEANUP_SKILL = `# worktree-cleanup
 本目录是 worktree 副本（分支 {{BRANCH}}）。收尾流程：
 
 1. 完成并提交本副本的工作。
-2. 调用 worktree_status：确认 merged_into_head=true（git merge-base --is-ancestor 证明）。
-3. 用户确认后走合并回主干；分支删除仅限已合并（git branch -d）。
-4. worktree_exit {action:"remove"} 清理副本。
+2. 调用 worktree_status：确认 merged_into_head=true（已合并证明）。
+3. 用户确认后：经用户同意调用 worktree_authorize_main 授权合并回主干。不要手动执行 git branch -d——分支删除由第 4 步的工具自动完成（仅删已合并分支）。
+4. worktree_exit {action:"remove"} 清理副本并删除已合并分支。
 `;

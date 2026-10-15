@@ -64,13 +64,16 @@ export function decideWrite(rawPath, baseDir, ctx, binding, auth = {}) {
   // cross-copy writes: ALWAYS-ON net (v0.1/zcode lineage) — checked before the
   // unbound early-return so it holds in any state (P1: stricter than host, never wider).
   if (cls.kind === "worktree" && (!binding || norm(cls.root) !== norm(binding.worktree))) {
-    return deny("write", rawPath, `目标落在${binding ? "其他" : ""}副本 ${cls.name}`, `跨副本写入被禁止；本会话${binding ? `绑定 ${binding.worktree}` : "未绑定"}。请写主 checkout（未绑定时）或本会话绑定的副本。`);
+    const next = binding
+      ? `跨副本写入被禁止；本会话绑定副本 ${binding.worktree}，请用解析到本副本内的路径写入。`
+      : `跨副本写入一律禁止（无论会话是否绑定）。如需操作副本 ${cls.name}，请以该副本为根新开会话。`;
+    return deny("write", rawPath, `目标落在${binding ? "其他" : ""}副本 ${cls.name}`, next);
   }
   if (!binding) return allow(); // P1: unbound => host sandbox semantics
 
   if (cls.kind === "main") {
     if (mainWriteAuthorized(target, auth)) return allow(); // user-gated grant (TTL)
-    return deny("write", rawPath, "目标落在主 checkout", `本会话绑定副本 ${binding.worktree}；请用相对路径写入本副本。写主 checkout 需用户授权：经用户同意后调用 worktree_authorize_main。`);
+    return deny("write", rawPath, "目标落在主 checkout", `本会话绑定副本 ${binding.worktree}，请用解析到本副本内的路径写入。确需写主 checkout：取得用户同意后调用 worktree_authorize_main。`);
   }
   return allow();
 }
@@ -88,7 +91,7 @@ export function decideRead(rawPath, baseDir, ctx, binding, { readPolicy = "warn"
   const cls = classifyTarget({ target, mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
   if (cls.kind !== "main") return allow();
   if (readPolicy === "strict") {
-    return deny("read", rawPath, "严格读域模式：目标落在主 checkout", `你在副本 ${binding.worktree} 中；请用相对路径读取本副本。`);
+    return deny("read", rawPath, "严格读域模式：目标落在主 checkout", `你在副本 ${binding.worktree} 中；请用解析到本副本内的路径读取。`);
   }
   return { kind: "allow", mark: readOriginMark(binding) };
 }
@@ -100,9 +103,28 @@ export function readOriginMark(binding) {
 
 // ---------- pwsh decision (design §6 row 4; lexical, always-on net) ----------
 
-const RE_PUSH = /(^|[;&|]\s*)git\s+push\b/i;
-const RE_GIT_BRANCH = /(^|[;&|]\s*)git\s+branch\b/i;
-const RE_GIT_C = /(^|[;&|]\s*)git\s+(?:-C\s+(--\S+|\S+)|--git-dir(?:=|\s+)(\S+)|--work-tree(?:=|\s+)(\S+))/i;
+// round-8: command-position separators include newline/CR (multiline scripts)
+// and `(` (subexpression `$(...)` / grouping) on top of ; & |.
+const CMD_SEP = "[\\n\\r;&|(]";
+const RE_PUSH = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+push\\b`, "i");
+const RE_GIT_BRANCH = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+branch\\b`, "i");
+const RE_GIT_C = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+(?:-C\\s+(--\\S+|\\S+)|--git-dir(?:=|\\s+)(\\S+)|--work-tree(?:=|\\s+)(\\S+))`, "i");
+
+// round-8: nested executors (cmd /c, powershell/pwsh -Command, iex) and
+// quote/backtick splices (`git pus""h`, `git pu\`sh`) defeated the command-
+// position anchoring above. ONE normalization seam — not per-rule widening —
+// folds the wrapper into a `;` separator and drops quoting/escape chars, so
+// inner commands hit the SAME rules with all their token logic intact.
+// Detection view only: the deny message quotes the RAW command (P3).
+const RE_NESTED_EXEC =
+  /(^|[\s;&|(])(?:cmd(?:\.exe)?\s+\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-c\b|-command\b))|\b(?:iex|invoke-expression)\b/gi;
+
+export function normalizePwshCommand(raw) {
+  let s = String(raw ?? "");
+  s = s.replace(/[`"']/g, ""); // PS/cmd quoting & escape chars (detection view only)
+  s = s.replace(RE_NESTED_EXEC, ";");
+  return s;
+}
 // checkout/switch to protected — tolerates retargeting prefix args (e.g. `git -C . checkout main`)
 const RE_CHECKOUT_PROTECTED = /git\s+(?:\S+\s+)*?(?:checkout|switch)\s+(?:-\S+\s+)*(?:master|main)\b/i;
 // human-only authorization (P4): the model must NEVER say authorize-main in a
@@ -125,8 +147,9 @@ const RE_GUARD_MODULE = new RegExp(
 );
 
 export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = {}) {
-  const cmd = typeof command === "string" ? command : "";
-  // sanitize config: non-string entries must never crash the net into fail-open
+  const rawCmd = typeof command === "string" ? command : "";
+  const cmd = normalizePwshCommand(rawCmd); // round-8 detection view (see above)
+  const summarizeOf = () => summarize(rawCmd);  // sanitize config: non-string entries must never crash the net into fail-open
   const protectedList = (Array.isArray(ctx.protectedBranches) ? ctx.protectedBranches : [])
     .filter((s) => typeof s === "string" && s.trim() !== "");
   const prot = protectedList.length ? protectedList : PROTECTED_DEFAULT;
@@ -138,20 +161,28 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
 
   // 0) human-only authorization channels: the model must never reach authorize
   //    semantics through a shell, whatever the entry point (round-2/3 blockers).
-  if (RE_AUTHORIZE_VERB.test(cmd)) {
-    return deny("pwsh", summarize(cmd), "试图经 shell 自授主分支写权限", "authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。");
+  //    0/0b test the RAW text: their patterns depend on quoting shape (R4-1).
+  if (RE_AUTHORIZE_VERB.test(rawCmd)) {
+    return deny("pwsh", summarizeOf(), "试图经 shell 自授主分支写权限", "authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。");
   }
   // 0b) guard state area is unreachable from the shell — write-tool rule 1's
   //     shell twin (round-3 blocker: Set-Content ../../.git/worktree-guard/...).
-  if (RE_STATE_AREA.test(cmd) || RE_RELATIVE_DOTGIT.test(cmd) || RE_GUARD_MODULE.test(cmd)) {
-    return deny("pwsh", summarize(cmd), "命令触及守卫状态区 / git 元数据 / 守卫模块", "状态由 worktree_* 工具管理；这是防自授硬规则，不可经 shell 绕过。");
+  if (RE_STATE_AREA.test(rawCmd) || RE_RELATIVE_DOTGIT.test(rawCmd) || RE_GUARD_MODULE.test(rawCmd)) {
+    return deny("pwsh", summarizeOf(), "命令触及守卫状态区 / git 元数据 / 守卫模块", "状态由 worktree_* 工具管理；这是防自授硬规则，不可经 shell 绕过。");
   }
   // 1) push mentioning a protected ref (anywhere in the command: errs safe for a lexical net)
   const mPush = cmd.match(RE_PUSH);
   const protRe = new RegExp(`\\b(?:${prot.map(esc).join("|")})\\b`, "i");
   if (mPush && protRe.test(cmd)) {
     if (authorized) return allow(); // user-gated grant (TTL)
-    return deny("pwsh", summarize(cmd), `push 目标包含受保护分支（${prot.join("/")}）`, "合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。");
+    // round-8/copy review: a push only visible after normalization (quote splice
+    // or wrapper) gets its OWN effect-oriented reason — generic text makes the
+    // model assume a false positive and retry with another wrapper. Wording
+    // names no detection dimension (P6 copy rule: effects, not mechanisms).
+    if (!RE_PUSH.test(rawCmd)) {
+      return deny("pwsh", summarizeOf(), "该命令经拼接或包装后仍会将提交推送到受保护分支；包装形式不改变拦截结果", "如确需推送受保护分支，取得用户同意后调用 worktree_authorize_main（TTL 授权后可执行等效 git 命令）。");
+    }
+    return deny("pwsh", summarizeOf(), `push 目标包含受保护分支（${prot.join("/")}）`, "合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。");
   }
   // 1b) push DELETING a worktree branch (remote deletion, round-2 fix) — only the
   //     destructive forms (`--delete`/`-d`, or `:branch` refspec); pushing own branch stays open.
@@ -159,13 +190,13 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   if (mPush && !authorized && (/--delete\b/i.test(cmd) || colonRe.test(cmd))) {
     const tokens = cmd.split(/[\s;&|]+/).map((t) => t.replace(/^:/, ""));
     if (tokens.some((t) => worktreeBranchToken(t))) {
-      return deny("pwsh", summarize(cmd), "远程删除 worktree 分支", "分支删除由收尾流程在本地执行（仅删已合并分支）。");
+      return deny("pwsh", summarizeOf(), "远程删除 worktree 分支", "分支删除由收尾流程在本地执行（仅删已合并分支）。");
     }
   }
   // 2) bare `git push` while ON a protected branch (zcode lineage)
   if (mPush && currentBranchName && prot.includes(currentBranchName)) {
     if (!authorized) {
-      return deny("pwsh", summarize(cmd), `当前处于受保护分支 ${currentBranchName}，裸 push 等同推送主干`, "请显式指定目标分支，或走授权流程。");
+      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，裸 push 等同推送主干`, "请显式指定目标分支，或走授权流程。");
     }
   }
   // 3) any `git branch` command touching a worktree branch token — decoy-first
@@ -174,7 +205,7 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   if (RE_GIT_BRANCH.test(cmd)) {
     const tokens = cmd.split(/[\s;&|]+/).map((t) => t.replace(/^[*+]/, ""));
     if (tokens.some((t) => worktreeBranchToken(t))) {
-      return deny("pwsh", summarize(cmd), "git branch 命令涉及 worktree 分支", "worktree 分支的创建/删除由 worktree_* 工具统一管理（仅删已合并分支）。");
+      return deny("pwsh", summarizeOf(), "git branch 命令涉及 worktree 分支", "worktree 分支的创建/删除由 worktree_* 工具统一管理（仅删已合并分支）。");
     }
   }
   // 4) git retargeting flags: absolute targets classified; RELATIVE `..`-escapes
@@ -184,25 +215,25 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   if (mC) {
     const target = mC[2] ?? mC[3] ?? mC[4];
     if (binding && typeof target === "string" && !target.startsWith("--") && /(^|[\\/])\.\.([\\/]|$)/.test(target)) {
-      return deny("pwsh", summarize(cmd), "git 定向参数以 .. 逃出副本", `本会话绑定副本 ${binding.worktree}；请在副本目录内直接执行 git 命令。`);
+      return deny("pwsh", summarizeOf(), "git 定向参数以 .. 逃出副本", `本会话绑定副本 ${binding.worktree}；请在副本目录内直接执行 git 命令。`);
     }
     for (const p of extractAbsolutePaths(cmd.slice(mC.index))) {
       const cls = classifyTarget({ target: norm(p), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
       if (cls.kind === "main" || (cls.kind === "worktree" && binding && norm(cls.root) !== norm(binding.worktree)) || cls.kind === "git-meta") {
-        return deny("pwsh", summarize(cmd), `git 定向参数指向 ${cls.kind === "main" ? "主 checkout" : cls.kind === "git-meta" ? ".git 元数据" : `其他副本 ${cls.name ?? ""}`}`, `本会话${binding ? `绑定副本 ${binding.worktree}，` : ""}请在目标副本目录内直接执行 git 命令。`);
+        return deny("pwsh", summarizeOf(), `git 定向参数指向 ${cls.kind === "main" ? "主 checkout" : cls.kind === "git-meta" ? ".git 元数据" : `其他副本 ${cls.name ?? ""}`}`, `本会话${binding ? `绑定副本 ${binding.worktree}，` : ""}请在目标副本目录内直接执行 git 命令。`);
       }
     }
   }
   // 5) checkout/switch to a protected branch while bound (compound + retargeted forms)
   if (binding && protRe.test(cmd) && RE_CHECKOUT_PROTECTED.test(cmd) && !authorized) {
-    return deny("pwsh", summarize(cmd), "切换到受保护分支", `本会话绑定副本 ${binding.worktree}；收尾合并走授权流程，不要直接切主干。`);
+    return deny("pwsh", summarizeOf(), "切换到受保护分支", `本会话绑定副本 ${binding.worktree}；收尾合并走授权流程，不要直接切主干。`);
   }
   // 6) residual absolute paths into main / git-meta while bound (lexical net; last resort)
   if (binding) {
     for (const p of extractAbsolutePaths(cmd)) {
       const cls = classifyTarget({ target: norm(p), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
       if (cls.kind === "main" || cls.kind === "git-meta") {
-        return deny("pwsh", summarize(cmd), `命令包含${cls.kind === "main" ? "主 checkout " : ".git 元数据 "}绝对路径`, `本会话绑定副本 ${binding.worktree}；请改用相对路径（cwd 已是副本），或用 write/edit 工具写文件。`);
+        return deny("pwsh", summarizeOf(), `命令包含${cls.kind === "main" ? "主 checkout " : ".git 元数据 "}绝对路径`, `本会话绑定副本 ${binding.worktree}；请改用解析到本副本内的路径（cwd 已是副本），或用 write/edit 工具写文件。`);
       }
     }
   }
@@ -223,8 +254,8 @@ function deny(tool, subject, reason, next) {
   };
 }
 
-function summarize(cmd) {
-  const one = String(cmd).replace(/\s+/g, " ").trim();
+function summarize(rawCmd) {
+  const one = String(rawCmd).replace(/\s+/g, " ").trim();
   return one.length > 60 ? one.slice(0, 57) + "..." : one;
 }
 

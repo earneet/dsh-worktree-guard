@@ -97,6 +97,24 @@ export function apply(ctx, config) {
     return out;
   });
 
+  // ---- C8 (design §3/§10): stamp resolved_at on a leaving session's OWN
+  //      binding. Never delete — a resumed session keeps its binding; prune
+  //      stays the final recycler. Emit-mode listener, self-contained: an
+  //      observability callback must never break the host (fail-open).
+  ctx.on("agent/disposed", async (payload) => {
+    try {
+      const h = payload?.agent?.session?.header;
+      if (!h?.id || !h.cwd) return;
+      const { commonDir } = await import("./core/gitops.mjs");
+      const { readBinding, writeBinding } = await import("./core/store.mjs");
+      const cd = await commonDir(h.cwd);
+      const b = await readBinding(cd, h.id);
+      if (b?.worktree && !b.resolved_at) {
+        await writeBinding(cd, h.id, { ...b, resolved_at: new Date().toISOString() });
+      }
+    } catch { /* observability only */ }
+  });
+
   // ---- component C: worktree_* tools ----
   const helpers = {
     sessionOf(exec) {

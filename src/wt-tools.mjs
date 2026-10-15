@@ -1,7 +1,8 @@
 // wt-tools.mjs — component C (design §8): worktree_* native tools.
-// Tool definitions follow the DSH defineTool shape (dsh-tool-todo lineage):
-// name, description (three-part contract §7 channel 1), string param schema,
-// async execute(args, exec). Registered by index.mjs via ctx.tools.register.
+// DSH defineTool contract (measured via real host load, round-10): every tool
+// MUST declare `output: { schema, render }` — `schema` is the object-root JSON
+// Schema of the value `execute` RETURNS, `render(args, value)` produces the
+// display blocks. Returning `{ content: [...] }` wrappers is not the contract.
 import * as lifecycle from "./core/lifecycle.mjs";
 import { commonDir, listWorktrees } from "./core/gitops.mjs";
 import { bustGuardContextCache } from "./guard.mjs";
@@ -11,28 +12,40 @@ import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, AUTHORIZE_TTL_CAP_MIN
 import { resolve as resolvePath } from "node:path";
 import { norm } from "./core/paths.mjs";
 
-/**
- * m1 (round-5): lifecycle errors must still honor the §7 three-part contract —
- * never let a raw stack-trace-shaped message reach the model.
- */
-function guarded(text) {
+const blocks = (text) => [{ type: "text", text }];
+
+/** m1 (round-5) + round-10: errors return the STRUCTURED `{ error }` value —
+ *  the three-part contract lives in the render text, never a raw stack trace. */
+function guarded(fn) {
   return async (args, exec) => {
     try {
-      return await text(args, exec);
+      return await fn(args, exec);
     } catch (err) {
       return {
-        content: [{
-          type: "text",
-          text: `[worktree-guard] worktree 操作失败：${String(err?.message ?? err)}。\n原因：${err?.code === "ENOENT" ? "路径或 git 仓库不存在" : "前置条件不满足或参数无效"}。\n下一步：调用 worktree_status 盘点当前状态后重试。`,
-        }],
+        error: `[worktree-guard] worktree 操作失败：${String(err?.message ?? err)}。原因：${err?.code === "ENOENT" ? "路径或 git 仓库不存在" : "前置条件不满足或参数无效"}。下一步：调用 worktree_status 盘点当前状态后重试。`,
       };
     }
   };
 }
 
-function textOut(lines) {
-  return { content: [{ type: "text", text: Array.isArray(lines) ? lines.join("\n") : lines }] };
+function renderError(value) {
+  return value.error ? blocks(value.error) : null;
 }
+
+// ---- schema helpers (enforced JSON-subset: scalar type, properties, required
+// ONLY on the parent object's array, boolean additionalProperties, items,
+// enum/const, exact-one oneOf — `required` inside a scalar node is rejected) ----
+const S = {
+  // `required` args are accepted for readability but NOT emitted on the node;
+  // parent objects declare requiredness via their own array.
+  str: (_required = false, description) => ({ type: "string", ...(description ? { description } : {}) }),
+  bool: () => ({ type: "boolean" }),
+  int: () => ({ type: "integer" }),
+  nullableStr: () => ({ oneOf: [{ type: "null" }, { type: "string" }] }),
+  obj: (properties, required = []) => ({ type: "object", properties, required: required.filter((k) => properties[k]), additionalProperties: false }),
+  loose: () => ({ type: "object", additionalProperties: true }),
+  err: () => ({ type: "string", description: "three-part failure text when the operation failed" }),
+};
 
 const createDesc = `Create an isolated git worktree copy (branch worktree-<slug>) for a task. WHEN: starting a task that should not touch the main checkout. AFTER: open a NEW session rooted at the returned worktree path (that session's sandbox then anchors to the copy). The task description is stored in .dsh/task-brief.md inside the copy for the next session. Do NOT call for tasks meant to edit the main checkout directly.`;
 
@@ -73,49 +86,50 @@ export function toolSpecs(helpers) {
           base_ref: str("base ref", "branch/commit to start from (default: current main branch)"),
         },
       },
+      output: {
+        schema: S.obj({
+          worktree: S.str(true), branch: S.str(true), base: S.str(true), brief_path: S.str(true), error: S.err(),
+        }, ["worktree", "branch", "base", "brief_path"]),
+        render: (_a, v) => renderError(v) ?? blocks([
+          `已创建副本：${v.worktree}`,
+          `分支：${v.branch}（基于 ${v.base}）`,
+          `下一步（推荐）：以副本为根新开会话（该会话沙箱自动锚定副本）。`,
+          `若继续本会话：本会话未绑定副本，写文件务必用指向副本内的绝对路径——相对路径会落到主 checkout。`,
+          `任务简报已写入 ${v.brief_path}`,
+        ].join("\n")),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
         const r = await lifecycle.create({ taskName: args.task_name, taskBrief: args.task_brief, cwd: s.cwd, config: cfg });
         bustGuardContextCache(); // new copy visible to the net immediately (round-1 fix)
-        return {
-          content: [{
-            type: "text",
-            text: [
-              `已创建副本：${r.worktree}`,
-              `分支：${r.branch}（基于 ${r.base}）`,
-              `下一步（推荐）：以副本为根新开会话（该会话沙箱自动锚定副本）。`,
-              `若继续本会话：本会话未绑定副本，写文件务必用指向副本内的绝对路径——相对路径会落到主 checkout。`,
-              `任务简报已写入 ${r.worktree}/.dsh/task-brief.md`,
-            ].join("\n"),
-          }],
-        };
+        return { worktree: r.worktree, branch: r.branch, base: r.base, brief_path: `${r.worktree}/.dsh/task-brief.md` };
       },
     },
     {
       name: "worktree_enter",
       description: enterDesc,
       parameters: { type: "object", properties: { path: str("worktree path", "path to the worktree copy", true) } },
+      output: {
+        schema: S.obj({
+          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), error: S.err(),
+        }, ["bound"]),
+        render: (_a, v) => renderError(v) ?? blocks(
+          v.bound
+            ? `已绑定（rooted）：本会话根 = 副本 ${v.worktree}。读写路径必须解析到本副本内。`
+            : `[worktree-guard] 已拒绝绑定：本会话根不是目标副本。\n原因：repo-rooted 绑定会造成读写分裂（读主根世界、写被逐次拦截）。\n下一步：${v.guidance ?? "以目标副本为会话根新开会话（推荐），获得结构性隔离。"}`,
+        ),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         // Design §8: repo-rooted sessions refuse enter and get guidance instead —
         // binding without structural isolation causes the deny-loop failure mode.
         const target = resolvePath(s.cwd, args.path ?? ".");
         if (norm(s.cwd) !== norm(target)) {
-          return {
-            content: [{
-              type: "text",
-              text: `[worktree-guard] 已拒绝绑定：本会话根不是目标副本。\n原因：repo-rooted 绑定会造成读写分裂（读主根世界、写被逐次拦截）。\n下一步：以 ${target} 为会话根新开会话（推荐），获得结构性隔离。`,
-            }],
-          };
+          return { bound: false, reason: "repo-rooted 绑定会造成读写分裂", guidance: `以 ${target} 为会话根新开会话（推荐），获得结构性隔离。` };
         }
         const binding = await lifecycle.enter({ path: args.path, sessionId: s.id, cwd: s.cwd });
-        return {
-          content: [{
-            type: "text",
-            text: `已绑定（rooted）：本会话根 = 副本 ${binding.worktree}。读写路径必须解析到本副本内。`,
-          }],
-        };
+        return { bound: true, worktree: binding.worktree, branch: binding.branch ?? "" };
       },
     },
     {
@@ -125,27 +139,51 @@ export function toolSpecs(helpers) {
         type: "object",
         properties: { action: { type: "string", description: "keep | remove", enum: ["keep", "remove"] } },
       },
+      output: {
+        schema: S.obj({ exited: S.bool(true), worktree: S.str(), message: S.str(), result: S.loose(), error: S.err() }, ["exited"]),
+        render: (_a, v) => renderError(v) ?? blocks(
+          v.exited
+            ? `已解绑${v.worktree ? `：${v.worktree}` : ""}。` + (v.result ? `\n${JSON.stringify(v.result, null, 2)}` : "")
+            : (v.message ?? "本会话没有绑定。"),
+        ),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
         const r = await lifecycle.exitSession({ sessionId: s.id, cwd: s.cwd, action: args.action ?? "keep", config: cfg });
-        return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+        if (r.exited === false) return { exited: false, message: r.message ?? "本会话没有绑定。" };
+        if (r.removed !== undefined) return { exited: true, result: r };
+        return { exited: true, worktree: r.worktree };
       },
     },
     {
       name: "worktree_status",
       description: statusDesc,
       parameters: { type: "object", properties: {} },
+      output: {
+        schema: S.obj({
+          mode: { type: "string", enum: ["rooted", "repo-rooted", "unbound"] },
+          binding: { oneOf: [{ type: "null" }, S.loose()] },
+          copies: { type: "array", items: S.loose() },
+          stale_state_hint: S.nullableStr(),
+          orphan_dirs: { type: "array", items: { type: "string" } },
+          error: S.err(),
+        }, ["mode", "copies"]),
+        render: (_a, v) => {
+          const e = renderError(v);
+          if (e) return e;
+          const lines = [
+            `模式：${v.mode}${v.binding?.worktree ? `（绑定 ${v.binding.worktree}）` : ""}`,
+            ...(v.stale_state_hint ? [`提示：上会话副本未收尾（${v.stale_state_hint}）：调 worktree_status 盘点，将未收尾副本与清理建议报告用户。`] : []),
+            ...v.copies.map((c) =>
+              ` - ${c.name} [${c.branch ?? "?"}] ${c.merged_into_head ? "已合并(证明)" : "未合并"}${c.dirty ? " 有未提交变更" : ""}${c.stale ? " ⚠️stale绑定" : ""}`),
+          ];
+          return blocks(lines.join("\n"));
+        },
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
-        const r = await lifecycle.status({ cwd: s.cwd, sessionId: s.id });
-        const lines = [
-          `模式：${r.mode}${r.binding ? `（绑定 ${r.binding.worktree}）` : ""}`,
-          ...(r.stale_state_hint ? [`提示：上会话副本未收尾（${r.stale_state_hint}）`] : []),
-          ...r.copies.map((c) =>
-            ` - ${c.name} [${c.branch ?? "?"}] ${c.merged_into_head ? "已合并(证明)" : "未合并"}${c.dirty ? " 有未提交变更" : ""}${c.stale ? " ⚠️stale绑定" : ""}`),
-        ];
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return await lifecycle.status({ cwd: s.cwd, sessionId: s.id });
       },
     },
     {
@@ -159,22 +197,36 @@ export function toolSpecs(helpers) {
           delete_branch: bool("also delete the branch (merged only)"),
         },
       },
+      output: {
+        schema: S.obj({
+          removed: S.bool(true), needConfirm: S.bool(), path: S.str(), branch: S.str(), branchKept: S.bool(), message: S.str(), error: S.err(),
+        }, ["removed"]),
+        render: (_a, v) => renderError(v) ?? blocks(v.message ?? (v.removed ? `已删除副本${v.branch ? `（分支 ${v.branchKept ? "保留" : "已删"}）` : ""}。` : "需确认：confirm_remove:true 后重试。")),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
         const r = await lifecycle.remove({ ...args, cwd: s.cwd, config: cfg, sessionId: s.id });
         bustGuardContextCache();
-        return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+        return r;
       },
     },
     {
       name: "worktree_prune",
       description: pruneDesc,
       parameters: { type: "object", properties: { dry_run: bool("list only, drop nothing") } },
+      output: {
+        schema: S.obj({
+          dryRun: S.bool(true), dropped: { type: "array", items: S.loose() }, error: S.err(),
+        }, ["dryRun", "dropped"]),
+        render: (_a, v) => renderError(v) ?? blocks(
+          v.dropped.length === 0 ? "无可回收绑定。"
+            : `${v.dryRun ? "[dry-run] 将回收" : "已回收"} ${v.dropped.length} 个绑定：\n` + v.dropped.map((d) => ` - ${d.sessionId}（${d.worktree}）：${d.reason}`).join("\n"),
+        ),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
-        const r = await lifecycle.prune({ cwd: s.cwd, dryRun: !!args.dry_run });
-        return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+        return await lifecycle.prune({ cwd: s.cwd, dryRun: !!args.dry_run });
       },
     },
     {
@@ -186,6 +238,10 @@ export function toolSpecs(helpers) {
           reason: str("why main needs to be written/merged", "audited, shown to the user", true),
           ttl_minutes: { type: "number", description: `TTL minutes (default ${DEFAULT_AUTHORIZE_TTL_MIN})` },
         },
+      },
+      output: {
+        schema: S.obj({ authorized: S.bool(true), expiresAt: S.str(true), error: S.err() }, ["authorized", "expiresAt"]),
+        render: (_a, v) => renderError(v) ?? blocks(`已授权写主分支，${v.expiresAt} 自动失效。`),
       },
       async execute(args, exec) {
         // P4: the pre-execute ask gate already confirmed with the user by the time we run.
@@ -204,19 +260,23 @@ export function toolSpecs(helpers) {
           },
         });
         await appendAudit(cd, { type: "authorize_main", session: s.id, reason: args.reason, ttl_minutes: ttl });
-        return { content: [{ type: "text", text: `已授权写主分支，${st.allow_main_writes.allow_expires_at} 自动失效。` }] };
+        return { authorized: true, expiresAt: st.allow_main_writes.allow_expires_at };
       },
     },
     {
       name: "worktree_revoke_main",
       description: revokeDesc,
       parameters: { type: "object", properties: {} },
+      output: {
+        schema: S.obj({ revoked: S.bool(true), error: S.err() }, ["revoked"]),
+        render: (_a, v) => renderError(v) ?? blocks("已收回主分支写授权。"),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cd = await commonDir(s.cwd);
         await updateState(cd, { allow_main_writes: {} });
         await appendAudit(cd, { type: "revoke_main", session: s.id });
-        return { content: [{ type: "text", text: "已收回主分支写授权。" }] };
+        return { revoked: true };
       },
     },
     {
@@ -231,16 +291,26 @@ export function toolSpecs(helpers) {
           ttl_minutes: { type: "number", description: `TTL minutes (default ${DEFAULT_ALLOW_TTL_MIN})` },
         },
       },
+      output: {
+        schema: S.obj({
+          action: S.str(true), path: S.str(), expiresAt: S.str(), entries: { type: "object", additionalProperties: true }, error: S.err(),
+        }, ["action"]),
+        render: (_a, v) => renderError(v) ?? blocks(
+          v.action === "add" ? `已放行 ${v.path}，${v.expiresAt} 失效。`
+            : v.action === "list" ? `allowlist：\n${JSON.stringify(v.entries ?? {}, null, 2)}`
+            : "allowlist 已清空。",
+        ),
+      },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cd = await commonDir(s.cwd);
         if (args.action === "list") {
           const a = await readAllowlist(cd);
-          return { content: [{ type: "text", text: JSON.stringify(a.entries ?? {}, null, 2) }] };
+          return { action: "list", entries: a.entries ?? {} };
         }
         if (args.action === "clear") {
           await clearAllowlist(cd);
-          return { content: [{ type: "text", text: "allowlist 已清空。" }] };
+          return { action: "clear" };
         }
         // add — P4 gate confirmed upstream; key is repo-absolute (round-2 fix)
         const { mainRoot } = await listWorktrees(s.cwd);
@@ -248,7 +318,7 @@ export function toolSpecs(helpers) {
         const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || sidecar.allowlistTtlMinutes || DEFAULT_ALLOW_TTL_MIN, ALLOW_TTL_CAP_MIN));
         const e = await addAllowEntry(cd, { path: args.path, reason: args.reason, ttlMinutes: ttl, grantedBy: "user-ask-gate", mainRoot });
         await appendAudit(cd, { type: "allow_add", session: s.id, ...e });
-        return { content: [{ type: "text", text: `已放行 ${e.path}，${e.expires_at} 失效。` }] };
+        return { action: "add", path: e.path, expiresAt: e.expires_at };
       },
     },
   ];

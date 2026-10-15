@@ -96,11 +96,13 @@ test("R5-4 stale hint is silent right after create (fresh last_active)", async (
   assert.equal(t, null);
 });
 
-test("R5-5 m1: tool errors keep the three-part contract", async () => {
+test("R5-5 m1: tool errors keep the three-part contract (structured { error } + render)", async () => {
   const specs = toolSpecs({ sessionOf: () => ({ id: "s1", cwd: repo }), config: async () => ({}) });
   const enter = specs.find((s) => s.name === "worktree_enter");
   const out = await enter.execute({ path: "no-such-worktree" }, {});
-  const text = out.content[0].text;
+  // round-10 defineTool contract: execute returns a structured value; the
+  // three-part text lives in { error } (throw path) or the refusal render.
+  const text = enter.output.render({}, out)[0].text;
   assert.match(text, /^\[worktree-guard\]/);
   assert.match(text, /原因：/);
   assert.match(text, /下一步：/);

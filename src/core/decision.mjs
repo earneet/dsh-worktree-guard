@@ -133,9 +133,11 @@ const RE_CHECKOUT_PROTECTED = /git\s+(?:\S+\s+)*?(?:checkout|switch)\s+(?:-\S+\s
 // variants fall out because we key on the verb, not the file name.)
 const RE_AUTHORIZE_VERB = /\bauthorize[-_]main\b/i;
 // guard state area reachable from the shell (round-3 blocker): relative .. into
-// .git, any worktree-guard path mention, or direct import of guard modules.
+// .git, or any .git/worktree-guard/ path. round-12 dogfood fix: the pattern must
+// require the .git/ context — a bare "worktree-guard/" also matched THIS plugin's
+// own repo path (F:\...\dsh-worktree-guard\package.json) and denied all work in it.
 const RE_RELATIVE_DOTGIT = /(\.\.[\/\\])+[^;&|`]*\.git\b/i;
-const RE_STATE_AREA = /worktree-guard[\/\\]/i;
+const RE_STATE_AREA = /(?:^|[^a-z0-9_.])\.git[\/\\]worktree-guard[\/\\]/i;
 // guard-module imports: require OUR package context (worktree-guard/ or src/
 // path segment) so user-owned store.mjs/guard.mjs are not false-positived;
 // the wt.mjs CLI entry is netted by name (round-4 tightening).

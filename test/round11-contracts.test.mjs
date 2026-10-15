@@ -60,3 +60,32 @@ test("R11-2 every tool declares output {schema, render} (defineTool contract)", 
     checkReq(s.output.schema, `${s.name}.output.schema`);
   }
 });
+
+// round-12 dogfood finding: working INSIDE the plugin's own repo must not trip
+// the state-area shell net — the old bare "worktree-guard/" pattern matched
+// F:\...\dsh-worktree-guard\package.json and denied all development commands.
+import { decidePwsh } from "../src/core/decision.mjs";
+import { P } from "./helpers/fixtures.mjs";
+const CTX12 = {
+  mainRoot: P("C:/repo"), commonDir: P("C:/repo/.git"),
+  worktrees: [{ root: P("C:/repo/.worktrees/worktree-x"), name: "worktree-x" }],
+  protectedBranches: ["master", "main"], branchPrefix: "worktree-",
+};
+test("R12-1 state-area net requires .git context; plugin's own repo path is allowed", () => {
+  // own-repo paths (no .git/worktree-guard segment) -> allow
+  for (const cmd of [
+    `Get-Content F:\\workspace_2\\dsh-worktree-guard\\package.json`,
+    `node F:/workspace_2/dsh-worktree-guard/wt.mjs status`,
+    `npm --prefix dsh-worktree-guard test`,
+  ]) {
+    assert.equal(decidePwsh({ command: cmd }, CTX12, null).kind, "allow", `must allow: ${cmd}`);
+  }
+  // real state-area reachability stays denied (absolute and relative forms)
+  for (const cmd of [
+    `Set-Content C:\\repo\\.git\\worktree-guard\\state.json 'x'`,
+    `Set-Content ../../.git/worktree-guard/allowlist.json 'x'`,
+    `echo x > .git/worktree-guard/state.json`,
+  ]) {
+    assert.equal(decidePwsh({ command: cmd }, CTX12, null).kind, "deny", `must deny: ${cmd}`);
+  }
+});

@@ -109,3 +109,14 @@ test("R12-2 push refspec precision while ON a protected branch", () => {
   // explicit protected refspec still denied by rule 1
   assert.equal(t("git push origin master").kind, "deny");
 });
+
+// round-12 live finding: a PowerShell redirect token (`2>&1`) after `git push`
+// was parsed as a refspec — a bare push slipped through the net un-denied.
+test("R12-3 push detection ignores PowerShell redirection tokens", () => {
+  const onProt = { command: "", currentBranchName: "master" };
+  const t = (cmd) => decidePwsh({ ...onProt, command: cmd }, CTX12, null, {});
+  assert.equal(t("git push 2>&1 | Select-Object -First 3").kind, "deny", "bare push with redirect must stay denied");
+  assert.equal(t("git push > out.log").kind, "deny");
+  assert.equal(t("git push origin 2>&1").kind, "deny");
+  assert.equal(t("git push origin v0.2.0 2>&1 | Out-Null").kind, "allow", "tag push with redirect stays open");
+});

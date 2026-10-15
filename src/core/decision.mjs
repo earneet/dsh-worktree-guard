@@ -201,11 +201,20 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   //    `git push origin worktree-x` cannot touch master and must stay open.
   //    HEAD/@ refspecs DO resolve to the current branch and stay netted.
   if (mPush && currentBranchName && prot.includes(currentBranchName)) {
-    const seg = cmd.slice(mPush.index + mPush[0].length).split(/[\n\r;&|]/)[0];
-    const toks = seg.split(/\s+/).filter((t) => t && !t.startsWith("-"));
+    const segRaw = cmd.slice(mPush.index + mPush[0].length).split(/[\n\r;&|]/)[0];
+    // strip git flags AND PowerShell redirection (`2>&1`, `> out.log`) — a stray
+    // redirect was parsed as a refspec and un-netted a bare push (R12-3).
+    const raw = segRaw.split(/\s+/).filter(Boolean);
+    const toks = [];
+    for (let i = 0; i < raw.length; i++) {
+      const tk = raw[i];
+      if (/^[\d&<>]+$/.test(tk)) { i++; continue; } // pure redirect token: skip it and its operand
+      if (tk.startsWith("-")) continue;
+      toks.push(tk);
+    }
     const effective = toks.length <= 1 ? (toks[0] ?? "") : toks.slice(1).join(" "); // [0]=remote
-    const tagsOnly = /--tags\b/.test(seg) && toks.length <= 1; // --tags alone cannot move a branch
-    const implicit = !tagsOnly && (effective === "" || /^[a-z][a-z0-9+.-]*:\/\//i.test(effective) || effective === "origin" || effective === "." || /--all\b|--mirror\b/.test(seg));
+    const tagsOnly = /--tags\b/.test(segRaw) && toks.length <= 1; // --tags alone cannot move a branch
+    const implicit = !tagsOnly && (effective === "" || /^[a-z][a-z0-9+.-]*:\/\//i.test(effective) || effective === "origin" || effective === "." || /--all\b|--mirror\b/.test(segRaw));
     // HEAD as the DESTINATION resolves to the current (protected) branch; HEAD as
     // a mere source (`HEAD:worktree-x`) updates another branch and is safe.
     const dstMovesCurrent = toks.slice(1).some((tk) => {

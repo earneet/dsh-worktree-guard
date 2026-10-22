@@ -1,5 +1,6 @@
 // core/sidecar.mjs — <repo>/.dsh/worktree-guard.json loader (P7: DSH config
-// space only). Accepts BOTH snake_case (design §13 spelling) and camelCase.
+// space only). Accepts BOTH snake_case (the design doc's §13 spelling) and
+// camelCase keys.
 // Always resolved against the repo MAIN ROOT (not the session cwd): rooted
 // sessions live inside a copy whose .dsh has no sidecar. No TTL cache — a
 // small fs read is far cheaper than the git spawns around it, and staleness

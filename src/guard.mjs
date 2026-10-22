@@ -1,10 +1,11 @@
-// guard.mjs — component A/A' (design §4): tools/pre-execute safety net.
-// deny-only by contract (DSH cannot rewrite args — contract C1); ask-gate for
-// authorize/allow tools (P4). Fail policy (design §11): a throw here is
-// fail-closed for free (host waterfall catches -> tool error). Read-side and
-// shell-side judgments self-catch to fail-open — but a DENY decision already
-// reached is returned regardless of audit failures (audit must never weaken
-// the net; adversarial round-1 blocker fix).
+// guard.mjs — the tools/pre-execute safety net for writes, reads, and shells
+// (component A/A' in the design doc, §4). deny-only by contract (DSH cannot
+// rewrite args — contract C1); ask-gate for authorize/allow tools (P4).
+// Fail policy (§11): a throw here is fail-closed for free (host waterfall
+// catches -> tool error). Read-side and shell-side judgments self-catch to
+// fail-open — but a DENY decision already reached is returned regardless of
+// audit failures (audit must never weaken the net; adversarial round-1
+// blocker fix).
 import { decideWrite, decideRead, decidePwsh, makeContext } from "./core/decision.mjs";
 import { resolveBinding } from "./core/binding.mjs";
 import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.mjs";
@@ -68,7 +69,7 @@ function putPendingMark(callId, mark) {
 
 /**
  * P4 grant state consumed by the decision tables (never wider than host sandbox).
- * Merges the sidecar's main_write_whitelist (design §13).
+ * Merges the sidecar's main_write_whitelist glob patterns (§13).
  */
 async function loadAuth(commonDir, mainRoot) {
   try {
@@ -89,10 +90,11 @@ async function loadAuth(commonDir, mainRoot) {
 }
 
 /**
- * Design §11 sandbox linkage (C9, defensive): `opts.sandboxModeOf(header)` is
- * supplied by index.mjs when the host exposes the capability; absence => no-op.
+ * Sandbox linkage (C9, defensive): `opts.sandboxModeOf(header)` is supplied
+ * by index.mjs when the host exposes the capability; absence => no-op.
  * Bound sessions under danger-full-access lose the structural layer entirely,
- * so the guard denies with an explicit warning instead of silently degrading.
+ * so the guard denies with an explicit warning instead of silently degrading
+ * (design §11).
  */
 async function sandboxDenied(binding, opts, header) {
   if (!binding || typeof opts?.sandboxModeOf !== "function") return null;
@@ -163,14 +165,15 @@ export async function decideToolCall(exec, opts = {}) {
   try {
     binding = await resolveBinding(commonDir, ident);
   } catch (err) {
-    // fail policy split (design §11): write tools fail-closed (rethrow), read tools fail-open
+    // Fail-policy split: write tools fail-closed (rethrow), read tools
+    // fail-open — a broken read net must not blind the session (§11).
     if (FILE_TOOLS.has(toolName)) throw err;
     return { kind: "allow" };
   }
 
-  // C9: bound + danger-full-access -> deny with guidance (§11). Lifecycle tools
-  // (worktree_*) are exempt — P5: the escape hatch must never be blocked by the
-  // very guard the session needs to escape from.
+  // C9: bound + danger-full-access -> deny with guidance (§11). Lifecycle
+  // tools (worktree_*) are exempt — P5: the escape hatch must never be blocked
+  // by the very guard the session needs to escape from.
   const sd = !String(toolName ?? "").startsWith("worktree_") ? await sandboxDenied(binding, effOpts, header) : null;
   if (sd) {
     await safeAudit(commonDir, ident.sessionId, "deny_sandbox_mode", sd.reason, {});
@@ -223,7 +226,7 @@ export async function decideToolCall(exec, opts = {}) {
       const branchNow = await currentBranch(cwd).catch(() => null);
       d = decidePwsh({ command: args.command, currentBranchName: branchNow }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
     } catch (err) {
-      // a broken net must not brick the session (fail-open + audit) — design §11
+      // a broken net must not brick the session: fail-open + audit (§11)
       await safeAudit(commonDir, ident.sessionId, "shell_guard_error", String(err), args);
       return { kind: "allow" };
     }

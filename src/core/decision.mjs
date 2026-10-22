@@ -1,6 +1,7 @@
-// core/decision.mjs — frozen decision tables (design §6). Every row maps to tests.
-// Pure functions: no fs, no git. All inputs are pre-normalized by the caller
-// (guard.mjs assembles the runtime context).
+// core/decision.mjs — the frozen decision tables for write/read/shell calls.
+// Every row maps to tests. Design doc §6. Pure functions: no fs, no git. All
+// inputs are pre-normalized by the caller (guard.mjs assembles the runtime
+// context).
 
 import { norm, isUnder, classifyTarget, extractAbsolutePaths } from "./paths.mjs";
 import { matchesMainWhitelist } from "./sidecar.mjs";
@@ -40,7 +41,7 @@ function mainWriteAuthorized(target, auth) {
   return false;
 }
 
-// ---------- write/edit decision (design §6 row 1) ----------
+// ---------- write/edit decision (§6 row 1) ----------
 
 /**
  * @param {string} rawPath model-supplied file_path
@@ -54,7 +55,8 @@ export function decideWrite(rawPath, baseDir, ctx, binding, auth = {}) {
   if (!target) return deny("write", rawPath, "空路径", "提供有效的相对或绝对路径。");
 
   const cls = classifyTarget({ target, mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
-  // state area is always denied (self-grant / tamper protection, design §9)
+  // the guard's own state area is always denied: writing there could
+  // self-grant permissions or tamper with audit/state (§9)
   if (isUnder(target, norm(ctx.commonDir) + "/worktree-guard")) {
     return deny("write", rawPath, "目标是 worktree-guard 状态区", "状态由 worktree_* 工具管理，不接受直接写入。");
   }
@@ -78,7 +80,7 @@ export function decideWrite(rawPath, baseDir, ctx, binding, auth = {}) {
   return allow();
 }
 
-// ---------- read decision (design §6.1 read-domain guard) ----------
+// ---------- read decision: read-domain guard (§6.1) ----------
 
 /**
  * warn (default): allow + mark origin when reading main while bound.
@@ -101,7 +103,7 @@ export function readOriginMark(binding) {
   return `[worktree-guard] 该读取来自主 checkout（非绑定副本 ${binding.worktree}）——内容是主干世界，勿据其判断副本代码现状。`;
 }
 
-// ---------- pwsh decision (design §6 row 4; lexical, always-on net) ----------
+// ---------- pwsh decision: lexical, always-on net (§6 row 4) ----------
 
 // round-8: command-position separators include newline/CR (multiline scripts)
 // and `(` (subexpression `$(...)` / grouping) on top of ; & |.
@@ -274,7 +276,8 @@ function allow() {
 }
 
 function deny(tool, subject, reason, next) {
-  // Three-part contract (design §7 channel 4): what / why / next single-turn action.
+  // Every deny message is three-part (channel 4): what / why / next
+  // single-turn action — the message itself is the last line of defense (§7).
   return {
     kind: "deny",
     reason: `[worktree-guard] 已阻止 ${tool}：${subject}。\n原因：${reason}。\n下一步：${next}`,

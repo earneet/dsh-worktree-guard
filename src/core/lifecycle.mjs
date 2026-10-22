@@ -116,8 +116,9 @@ export async function exitSession({ sessionId, cwd, action = "keep", config = {}
 }
 
 /**
- * remove: exit-first flow (design §8). Link scan strips ALL links before
- * `git worktree remove` (traversal protection); branch deletion merged-only.
+ * remove: exit-first flow — the session must unbind before the copy is
+ * deleted (§8). Link scan strips ALL links before `git worktree remove`
+ * (traversal protection); branch deletion merged-only.
  */
 export async function remove({ path, cwd, confirmRemove = false, deleteBranch = false, config = {}, sessionId = "cli" }) {
   if (!confirmRemove) return { removed: false, needConfirm: true, path };

@@ -1,4 +1,4 @@
-// Unit tests for the frozen decision tables (design §6) — zcode A–R methodology.
+// Unit tests for the frozen decision tables (§6) — zcode A–R methodology.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { norm, stripExtendedLengthPrefix, classifyTarget, isDotGitPath, extractAbsolutePaths } from "../src/core/paths.mjs";

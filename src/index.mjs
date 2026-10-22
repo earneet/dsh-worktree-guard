@@ -1,4 +1,5 @@
-// index.mjs — cordis plugin entry (design §4). Assembles components:
+// index.mjs — cordis plugin entry: assembles the guard, tools, and notices.
+// Layout per the design doc's assembly view (§4):
 //   A/A' guard  -> ctx.on("tools/pre-execute")   (deny/ask only, args frozen by host)
 //   C    tools  -> ctx.tools.register(worktree_* specs)
 //   D    notices-> session-start inject, standing line, post-execute markers
@@ -44,9 +45,11 @@ export function apply(ctx, config) {
     const decision = await decideToolCall(exec, {
       protectedBranches: config.protectedBranches,
       readPolicy: config.readPolicy,
-      // C9 capability probe (design §11): hosts exposing sandbox mode get the
-      // danger-full-access net; absent capability degrades to no-op (P1).
-      // Async-resilient: hosts whose resolve() returns a Promise still work.
+      // Sandbox-mode capability probe (C9): when the host exposes the current
+      // sandbox mode, a bound session in danger-full-access gets the extra
+      // deny net; without the capability this degrades to a no-op (P1).
+      // Design §11. Async-resilient: hosts whose resolve() returns a Promise
+      // still work.
       sandboxModeOf: async (header) => {
         if (typeof ctx.fs?.sandboxMode === "string") return ctx.fs.sandboxMode;
         if (typeof ctx.sandboxPolicy?.resolve === "function") {
@@ -100,9 +103,9 @@ export function apply(ctx, config) {
     return out;
   });
 
-  // ---- C8 (design §3/§10): stamp resolved_at on a leaving session's OWN
-  //      binding. Never delete — a resumed session keeps its binding; prune
-  //      stays the final recycler. Emit-mode listener, self-contained: an
+  // ---- When a session leaves, stamp resolved_at on its OWN binding (C8).
+  //      Never delete — a resumed session keeps its binding; prune stays the
+  //      final recycler (design §3/§10). Emit-mode listener, self-contained: an
   //      observability callback must never break the host (fail-open).
   ctx.on("agent/disposed", async (payload) => {
     try {

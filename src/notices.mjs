@@ -1,6 +1,8 @@
-// notices.mjs — component D (design §7): the five communication channels.
-// Channel budgets are frozen by contract: standing line = 1 line, session-start
-// inject <= 15 lines, deny = 3 parts, markers = 1 line. P7: no user files.
+// notices.mjs — the five communication channels to the model (standing line,
+// session-start inject, deny messages, tool descriptions, read markers).
+// Component D in the design doc (§7). Channel budgets are frozen by contract:
+// standing line = 1 line, session-start inject <= 15 lines, deny = 3 parts,
+// markers = 1 line. P7: no user files.
 import { resolveBinding, isRooted } from "./core/binding.mjs";
 import { commonDir, worktreeNameOf } from "./core/gitops.mjs";
 import { readState } from "./core/store.mjs";
@@ -18,7 +20,7 @@ export function standingLine(binding) {
  * Channel 3 — session-start inject (<=15 lines, information-only when relevant).
  * parentSession is honored (round-5 B2): inherited bindings get the rooted
  * guidance too. The stale hint fires only past the stale threshold — a fresh
- * create/enter must not nag the NEXT main-rooted session (design §7 ②).
+ * create/enter must not nag the NEXT main-rooted session (§7 ②).
  */
 export async function sessionStartText({ cwd, sessionId, parentSession = null }) {
   let cd;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// wt.mjs — human/script CLI over the same core as the native tools (design §8).
+// wt.mjs — human/script CLI over the same core as the native tools (§8).
 // Zero-dependency ESM (zcode wt.mjs lineage). Sessions pass --session explicitly
 // (CLI runs outside a DSH session).
 import { parseArgs } from "node:util";

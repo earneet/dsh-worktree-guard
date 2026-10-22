@@ -1,7 +1,7 @@
 // round-8 hardening regressions: (a) shell-net normalization seam (nested
 // executors, quote/backtick splices, newline/paren separators) with
 // false-positive guards; (b) C8 agent/disposed binding recycle via apply();
-// (c) junction strip-before-remove (design §12) incl. untracked-link dirty
+// (c) junction strip-before-remove (§12) incl. untracked-link dirty
 // semantics in isDirtyForLifecycle.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";

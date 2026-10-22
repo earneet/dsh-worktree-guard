@@ -1,4 +1,5 @@
-// wt-tools.mjs — component C (design §8): worktree_* native tools.
+// wt-tools.mjs — the worktree_* native tools (create/enter/status/prune/remove,
+// authorize-main, allow, etc.). Component C in the design doc (§8).
 // DSH defineTool contract (measured via real host load, round-10): every tool
 // MUST declare `output: { schema, render }` — `schema` is the object-root JSON
 // Schema of the value `execute` RETURNS, `render(args, value)` produces the
@@ -129,8 +130,10 @@ export function toolSpecs(helpers) {
       },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
-        // Design §8: repo-rooted sessions refuse enter and get guidance instead —
-        // binding without structural isolation causes the deny-loop failure mode.
+        // A repo-rooted session must not bind: without structural isolation it
+        // would read the main checkout's world while every write gets denied,
+        // i.e. a permanent deny loop. Refuse and hand back guidance instead
+        // (design §8).
         const target = resolvePath(s.cwd, args.path ?? ".");
         if (norm(s.cwd) !== norm(target)) {
           return { bound: false, reason: "repo-rooted 绑定会造成读写分裂", guidance: `以 ${target} 为会话根新开会话（推荐），获得结构性隔离。` };
@@ -331,6 +334,7 @@ export function toolSpecs(helpers) {
       },
     },
   ];
-  // every execute gets the §7 three-part error contract (round-5 m1)
+  // Wrap every execute so errors surface as three-part deny messages
+  // (what/why/single-turn next step) per the communication contract (§7).
   return raw.map((s) => ({ ...s, execute: guarded(s.execute) }));
 }

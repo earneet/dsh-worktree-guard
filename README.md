@@ -40,8 +40,8 @@ dsh web --dump-config
 
 ```bash
 # CLI（与原生工具同一 core）
-node wt.mjs create fix-login --brief "修复登录"
-node wt.mjs status
+node wt.js create fix-login --brief "修复登录"
+node wt.js status
 ```
 
 会话内（插件加载后）使用 `worktree_create` / `worktree_enter` / `worktree_exit` / `worktree_status` 等工具；被拦截时按 deny 消息的"下一步"行动，或调用 `worktree_status`。

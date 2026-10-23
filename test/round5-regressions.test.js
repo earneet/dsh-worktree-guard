@@ -6,12 +6,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decideToolCall } from "../src/guard.mjs";
-import { toolSpecs } from "../src/wt-tools.mjs";
-import { sessionStartText } from "../src/notices.mjs";
-import { loadSidecar, normalizeSidecar, globMatch } from "../src/core/sidecar.mjs";
-import * as lifecycle from "../src/core/lifecycle.mjs";
-import { norm } from "../src/core/paths.mjs";
+import { decideToolCall } from "../src/guard.js";
+import { toolSpecs } from "../src/wt-tools.js";
+import { sessionStartText } from "../src/notices.js";
+import { loadSidecar, normalizeSidecar, globMatch } from "../src/core/sidecar.js";
+import * as lifecycle from "../src/core/lifecycle.js";
+import { norm } from "../src/core/paths.js";
 
 function sh(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

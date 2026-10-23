@@ -82,7 +82,7 @@ DSH 的机制事实（全部源码实证，`C:\Users\Administrator\.dsh\profiles
 │ 读写域守卫（部件A'：读侧，§6.1）                           │
 │  绑定态 read/glob/grep 命中主根 → warn 标记 / strict deny  │
 ├────────────────────────────────────────────────────────┤
-│ 生命周期（部件C：worktree_* 原生工具 + wt.mjs CLI）        │
+│ 生命周期（部件C：worktree_* 原生工具 + wt.js CLI）        │
 │  M1: create/enter/exit/status                            │
 │  M2: remove/prune/authorize_main/allow（ask_user 人闸）   │
 ├────────────────────────────────────────────────────────┤
@@ -110,7 +110,7 @@ dsh-worktree-guard/
       binding.ts    # 绑定三层解析
       store.ts      # <git-common-dir>/worktree-guard/ 读写
       gitops.ts     # merge-base / 分支 / worktree 生命周期
-  wt.mjs            # CLI 包装（同一 core，人/脚本入口）
+  wt.js            # CLI 包装（同一 core，人/脚本入口）
   test/
 ```
 
@@ -211,7 +211,7 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 
 ## 8. 生命周期与命令
 
-部件C：`ctx.tools.register(defineTool(...))` 原生工具（模型入口）+ `wt.mjs` CLI（同一 core 纯函数库，人/脚本入口，与 zcode 参数对齐）。
+部件C：`ctx.tools.register(defineTool(...))` 原生工具（模型入口）+ `wt.js` CLI（同一 core 纯函数库，人/脚本入口，与 zcode 参数对齐）。
 
 ```
 M1: create {task_name}      # .worktrees/worktree-<slug> + 分支 + sync 复制/junction

@@ -1,13 +1,13 @@
-// core/decision.mjs — the frozen decision tables for write/read/shell calls.
+// core/decision.js — the frozen decision tables for write/read/shell calls.
 // Every row maps to tests. Design doc §6. Pure functions: no fs, no git. All
-// inputs are pre-normalized by the caller (guard.mjs assembles the runtime
+// inputs are pre-normalized by the caller (guard.js assembles the runtime
 // context).
 
-import { norm, isUnder, classifyTarget, extractAbsolutePaths } from "./paths.mjs";
-import { matchesMainWhitelist } from "./sidecar.mjs";
-import { DEFAULT_PROTECTED_BRANCHES as PROTECTED_DEFAULT, DEFAULT_BRANCH_PREFIX } from "./constants.mjs";
+import { norm, isUnder, classifyTarget, extractAbsolutePaths } from "./paths.js";
+import { matchesMainWhitelist } from "./sidecar.js";
+import { DEFAULT_PROTECTED_BRANCHES as PROTECTED_DEFAULT, DEFAULT_BRANCH_PREFIX } from "./constants.js";
 
-// ---------- context assembly (caller: guard.mjs) ----------
+// ---------- context assembly (caller: guard.js) ----------
 
 /**
  * Build the guard context for one repo from live git data (caller supplies).
@@ -141,12 +141,12 @@ const RE_AUTHORIZE_VERB = /\bauthorize[-_]main\b/i;
 const RE_RELATIVE_DOTGIT = /(\.\.[\/\\])+[^;&|`]*\.git\b/i;
 const RE_STATE_AREA = /(?:^|[^a-z0-9_.])\.git[\/\\]worktree-guard[\/\\]/i;
 // guard-module imports: require OUR package context (worktree-guard/ or src/
-// path segment) so user-owned store.mjs/guard.mjs are not false-positived;
-// the wt.mjs CLI entry is netted by name (round-4 tightening).
+// path segment) so user-owned store.js/guard.js are not false-positived;
+// the wt.js CLI entry is netted by name (round-4 tightening).
 const RE_GUARD_MODULE = new RegExp(
   [
-    /(?:import|require)\s*\(?\s*["'`][^"'`]*(?:worktree-guard[\/\\]|src[\/\\])[^"'`]*(?:store|lifecycle|wt-tools|guard)\.mjs["'`]/i.source,
-    /(?:import|require)\s*\(?\s*["'`](?:\.\/)?wt\.mjs["'`]/i.source,
+    /(?:import|require)\s*\(?\s*["'`][^"'`]*(?:worktree-guard[\/\\]|src[\/\\])[^"'`]*(?:store|lifecycle|wt-tools|guard)\.m?js["'`]/i.source,
+    /(?:import|require)\s*\(?\s*["'`](?:\.\/)?wt\.m?js["'`]/i.source,
   ].join("|"),
 );
 

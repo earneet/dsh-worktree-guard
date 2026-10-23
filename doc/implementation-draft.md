@@ -25,8 +25,8 @@ dsh-worktree-guard/
       binding.ts        # 绑定解析三层（own → parentSession 链 → null）
       store.ts          # <git-common-dir>/worktree-guard/ 状态读写（移植 zcode）
       gitops.ts         # merge-base 验证、分支删除、worktree 生命周期
-  wt.mjs                # CLI 包装（同一 core，人用/脚本用；零依赖 ESM）
-  test/                 # 决策表驱动测试（v2.test.mjs 方法论移植）
+  wt.js                # CLI 包装（同一 core，人用/脚本用；零依赖 ESM）
+  test/                 # 决策表驱动测试（v2.test.js 方法论移植）
 ```
 
 插件入口遵循宿主包形态（`dsh-tool-todo` 实例）：
@@ -98,7 +98,7 @@ worktree_authorize_main {reason, ttl_minutes?}   worktree_revoke_main {}
 worktree_allow {action, path, reason, ttl_minutes?}
 ```
 
-- 全部是 `core/` 纯函数的薄壳；`wt.mjs` CLI 复用同一 core（人用通道，参数与 zcode 对齐）。
+- 全部是 `core/` 纯函数的薄壳；`wt.js` CLI 复用同一 core（人用通道，参数与 zcode 对齐）。
 - `enter` 写 `bindings/<session_id>.json`（session id 取 `exec.agent.session.header.id`）；子代理不重复 enter——`resolveBinding` 惰性走 `parentSession` 链快照（`dsh-subagent/lib/index.js:502-508` 实证 header 自带父 id，**不需要 zcode 的 SQLite 父链**），继承绑定永不阻塞 owner（never-block-owner 不变量沿用）。
 - `status` 输出标注 rooted / repo-rooted 模式；`remove` 前的 merge-base `--is-ancestor` 验证与 link_scan "all" 全树摘链接，均从 zcode/chuck-ma 移植。
 - 会话标题 `🌿 <branch>`（`dsh-session-title` 体系，低成本可见性，opencode 先例）。

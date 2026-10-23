@@ -1,0 +1,20 @@
+{
+  "name": "dsh-hello-time",
+  "version": "0.1.0",
+  "description": "A minimal DSH plugin: greets each session with the current time and registers a hello_now tool",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.js",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "files": ["src", "cordis.patch.yml"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test --test-isolation=none test/hello-time.test.js"
+  },
+  "dsh": {
+    "bundle": { "patch": "cordis.patch.yml" }
+  },
+  "keywords": ["dsh", "dsh-plugin"]
+}

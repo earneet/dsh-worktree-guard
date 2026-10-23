@@ -1,11 +1,11 @@
-// core/gitops.mjs — git operations over async child_process (round-5 M1: the
+// core/gitops.js — git operations over async child_process (round-5 M1: the
 // guard runs on hot async paths; execFileSync blocked the host event loop
 // 30-100ms per spawn on Windows). No cordis deps; every function takes an
 // explicit cwd and returns plain data; rejects on git failure.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isAbsolute, resolve } from "node:path";
-import { norm, isUnder } from "./paths.mjs";
+import { norm, isUnder } from "./paths.js";
 
 const execFileP = promisify(execFile);
 

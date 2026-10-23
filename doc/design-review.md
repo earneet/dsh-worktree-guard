@@ -60,7 +60,7 @@
 逐项核对三个前辈实物，设计文档的归因**全部属实**：
 
 - **opencode-worktree-isolation**（本地 `F:\workspace_2\opencode-worktree-guard`）：透明重写 ✅、读路径修正 ✅、Windows 归一化（`\\?\` 剥离/大小写/分隔符，`src/lib.ts:167-183`）✅、allowlist/TTL ✅。**加注 1**：`[worktree]` 可见标记**只覆盖 bash 命令改写**（`lib.ts:219-248`，issue #11 的误归因场景就是 shell 输出），write/edit/read 改写是静默的——设计 §5 把它放在 pwsh 行内，恰好一致，但若将来泛化到文件工具需自行新增（DSH 的 `tools/post-execute` additionalContexts 正好是现成注入缝）。
-- **zcode-worktree-guard**：默认开放哲学、常开安全网、authorize-main（15min TTL，缺失 TTL 视为过期）、死绑定 prune、never-block-owner、link_scan "all" 全树 lstat+unlink、DB parent 链继承、204 用例决策表方法论——全部在源码中核实（`guard_hook.mjs`、`common.mjs`、`wt.mjs`、`tests/v2.test.mjs`）。§4.2 "node 不可用"误判教训属实。
+- **zcode-worktree-guard**：默认开放哲学、常开安全网、authorize-main（15min TTL，缺失 TTL 视为过期）、死绑定 prune、never-block-owner、link_scan "all" 全树 lstat+unlink、DB parent 链继承、204 用例决策表方法论——全部在源码中核实（`guard_hook.js`、`common.js`、`wt.js`、`tests/v2.test.js`）。§4.2 "node 不可用"误判教训属实。
 - **chuck-ma opencode-worktree-guard**（npm 0.3.7 tarball 实读）：merge-base `--is-ancestor` 合并验证解锁 ✅（`worktree_done`，squash/rebase 需 `force:true`）。**加注 2**：GitHub 仓库名是 `chuck-ma/opencode-config`（`chuck-ma/opencode-worktree-guard` 404）；且 0.3.5 起 postinstall 改写用户 opencode.json 锁版本——**供应链异味，只借鉴设计、不加依赖**是正确姿势，建议在 §15 明示。
 
 ## 5. 设计未充分利用的 DSH 资产

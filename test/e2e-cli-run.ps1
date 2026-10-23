@@ -1,8 +1,8 @@
-# E2E CLI 实测脚本（修正版）：所有 wt.mjs 调用均以目标仓库为 cwd
+# E2E CLI 实测脚本（修正版）：所有 wt.js 调用均以目标仓库为 cwd
 $ErrorActionPreference = 'Stop'
 $repo = Join-Path $env:TEMP ("wtg-e2e-" + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $repo | Out-Null
-$wtCli = Join-Path $PSScriptRoot "..\wt.mjs" | Resolve-Path
+$wtCli = Join-Path $PSScriptRoot "..\wt.js" | Resolve-Path
 $fail = 0
 function Check($name, $cond) {
   if ($cond) { Write-Output "PASS  $name" } else { Write-Output "FAIL  $name"; $script:fail++ }

@@ -1,13 +1,13 @@
-// notices.mjs — the five communication channels to the model (standing line,
+// notices.js — the five communication channels to the model (standing line,
 // session-start inject, deny messages, tool descriptions, read markers).
 // Component D in the design doc (§7). Channel budgets are frozen by contract:
 // standing line = 1 line, session-start inject <= 15 lines, deny = 3 parts,
 // markers = 1 line. P7: no user files.
-import { resolveBinding, isRooted } from "./core/binding.mjs";
-import { commonDir, worktreeNameOf } from "./core/gitops.mjs";
-import { readState } from "./core/store.mjs";
-import { readOriginMark as coreReadOriginMark } from "./core/decision.mjs";
-import { STALE_THRESHOLD_MS } from "./core/constants.mjs";
+import { resolveBinding, isRooted } from "./core/binding.js";
+import { commonDir, worktreeNameOf } from "./core/gitops.js";
+import { readState } from "./core/store.js";
+import { readOriginMark as coreReadOriginMark } from "./core/decision.js";
+import { STALE_THRESHOLD_MS } from "./core/constants.js";
 
 export const PREFIX = "[worktree-guard]";
 

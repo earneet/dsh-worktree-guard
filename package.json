@@ -12,14 +12,14 @@
     "url": "https://github.com/earneet/dsh-worktree-guard/issues"
   },
   "homepage": "https://github.com/earneet/dsh-worktree-guard#readme",
-  "main": "src/index.mjs",
-  "bin": { "wt": "wt.mjs" },
+  "main": "src/index.js",
+  "bin": { "wt": "wt.js" },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.0"
   },
-  "files": ["src", "wt.mjs", "cordis.patch.yml", "README.md", "LICENSE"],
+  "files": ["src", "wt.js", "cordis.patch.yml", "README.md", "LICENSE"],
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.js\""
   },
   "engines": { "node": ">=20" },
   "dsh": {

@@ -1,4 +1,4 @@
-// guard.mjs — the tools/pre-execute safety net for writes, reads, and shells
+// guard.js — the tools/pre-execute safety net for writes, reads, and shells
 // (component A/A' in the design doc, §4). deny-only by contract (DSH cannot
 // rewrite args — contract C1); ask-gate for authorize/allow tools (P4).
 // Fail policy (§11): a throw here is fail-closed for free (host waterfall
@@ -6,13 +6,13 @@
 // fail-open — but a DENY decision already reached is returned regardless of
 // audit failures (audit must never weaken the net; adversarial round-1
 // blocker fix).
-import { decideWrite, decideRead, decidePwsh, makeContext } from "./core/decision.mjs";
-import { resolveBinding } from "./core/binding.mjs";
-import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.mjs";
-import { norm, physicalAncestorKey, classifyTarget } from "./core/paths.mjs";
-import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/store.mjs";
-import { loadSidecar } from "./core/sidecar.mjs";
-import { GUARD_CTX_TTL_MS } from "./core/constants.mjs";
+import { decideWrite, decideRead, decidePwsh, makeContext } from "./core/decision.js";
+import { resolveBinding } from "./core/binding.js";
+import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.js";
+import { norm, physicalAncestorKey, classifyTarget } from "./core/paths.js";
+import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/store.js";
+import { loadSidecar } from "./core/sidecar.js";
+import { GUARD_CTX_TTL_MS } from "./core/constants.js";
 
 const ctxCache = new Map(); // commonDir -> { at, ctx }
 
@@ -91,7 +91,7 @@ async function loadAuth(commonDir, mainRoot) {
 
 /**
  * Sandbox linkage (C9, defensive): `opts.sandboxModeOf(header)` is supplied
- * by index.mjs when the host exposes the capability; absence => no-op.
+ * by index.js when the host exposes the capability; absence => no-op.
  * Bound sessions under danger-full-access lose the structural layer entirely,
  * so the guard denies with an explicit warning instead of silently degrading
  * (design §11).

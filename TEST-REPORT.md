@@ -15,10 +15,10 @@
 
 ## 加固轮（round-8，独立复审后按优先级迭代）
 
-依据综合复审三项建议完成迭代，新增 [test/round8-hardening.test.mjs](test/round8-hardening.test.mjs)（17 项）并入 `npm test`：
+依据综合复审三项建议完成迭代，新增 [test/round8-hardening.test.js](test/round8-hardening.test.js)（17 项）并入 `npm test`：
 
 - **词法网收紧（单一归一化 seam）**：`cmd /c`、`pwsh -Command`、`iex` 嵌套包装，`git pus""h`/反引号拼接，`$(...)` 子表达式，多行脚本第二行 push——全部入网；误报防线（echo/commit 信息含 push 字样、`cmd /c "git status"`、push 本分支）不回退。关键动机：**push 是网络操作，rooted 沙箱无兜底，词法网是唯一防线**。guard-module/state-area 规则保持测原文（引号形态依赖，R4-1 验证）。
-- **C8 落地**：经宿主 Cordis Inspect Event 目录实证 `agent/disposed`（emit，payload `{agent}`）；[index.mjs](src/index.mjs) 挂监听——disposed 为本会话绑定盖 `resolved_at`（幂等、不删：resume 友好，prune 终删；监听自 catch，emit 回调不得破坏宿主）。C10 能力面同步实证（`agentLoop.create(id, options, meta: Pick<SessionHeader,'cwd'>)`），实际调用冒烟仍后置。
+- **C8 落地**：经宿主 Cordis Inspect Event 目录实证 `agent/disposed`（emit，payload `{agent}`）；[index.js](src/index.js) 挂监听——disposed 为本会话绑定盖 `resolved_at`（幂等、不删：resume 友好，prune 终删；监听自 catch，emit 回调不得破坏宿主）。C10 能力面同步实证（`agentLoop.create(id, options, meta: Pick<SessionHeader,'cwd'>)`），实际调用冒烟仍后置。
 - **junction 摘链删除集成测试（R8-D）**：sidecar `symlink_dirs` 声明链 + 未声明 rogue 链 → remove 前全树摘链，主根两侧目标内容完好（防 `git worktree remove` 递归穿透）；配套修复 `isDirtyForLifecycle`：未跟踪 symlink/junction 不计脏（链接非用户内容、删除前必被摘除），未跟踪真实文件照常计脏（R8-D2 防掩蔽）。
 
 
@@ -33,9 +33,9 @@
 
 ## 迭代轮（round-7，报告同日完成）
 
-依据下表发现 #2/#3 完成迭代，新增 [test/round7-iterations.test.mjs](test/round7-iterations.test.mjs) 3 项回归：
+依据下表发现 #2/#3 完成迭代，新增 [test/round7-iterations.test.js](test/round7-iterations.test.js) 3 项回归：
 
-- **#2 修复**：`isDirtyForLifecycle`（[gitops.mjs](src/core/gitops.mjs)）在 remove/status 判定时忽略**未跟踪**的插件自有 `.dsh/` 文件；已跟踪的用户改动照常计脏（R7-3）。`git worktree remove` 层改为闸门通过后始终 `--force`（我们的闸门是权威 dirty 判定，剩余未跟踪文件必为插件自有）。新建副本现在无需 `--force` 即可 remove（R7-1）。
+- **#2 修复**：`isDirtyForLifecycle`（[gitops.js](src/core/gitops.js)）在 remove/status 判定时忽略**未跟踪**的插件自有 `.dsh/` 文件；已跟踪的用户改动照常计脏（R7-3）。`git worktree remove` 层改为闸门通过后始终 `--force`（我们的闸门是权威 dirty 判定，剩余未跟踪文件必为插件自有）。新建副本现在无需 `--force` 即可 remove（R7-1）。
   - 迭代中被 R7-2 否决的方案：写 per-worktree `info/exclude` —— 实测 `git rev-parse --git-path info/exclude` 在 worktree 内解析到**共享** exclude，会波及主 checkout 的 status 语义；改为判定层方案，零仓库状态副作用（R7-2 验证共享 exclude 未动、`isDirty` 原语义保留）。
 - **#3 文档**：README 白名单说明补充 glob 全匹配语义（`"docs/*"` 命中、`"docs/"` 不命中）。
 
@@ -45,10 +45,10 @@
 | 层级 | 方式 | 结果 |
 |---|---|---|
 | 1. 现有测试套件（决策表单测 + 集成 + 6 轮对抗回归） | `npm test` | ✅ |
-| 2. 守卫决策网全路径 + 插件装配层 | 新增 [test/e2e-guard-live.test.mjs](test/e2e-guard-live.test.mjs)（27 项） | ✅ 27/27 |
-| 3. CLI 端到端（真实临时仓库，wt.mjs 全命令） | 新增 [test/e2e-cli-run.ps1](test/e2e-cli-run.ps1)（23 项） | ✅ 23/23 |
-| 4. 迭代回归（round-7） | 新增 [test/round7-iterations.test.mjs](test/round7-iterations.test.mjs)（3 项） | ✅ 3/3 |
-| 5. 加固回归（round-8） | 新增 [test/round8-hardening.test.mjs](test/round8-hardening.test.mjs)（17 项） | ✅ 17/17 |
+| 2. 守卫决策网全路径 + 插件装配层 | 新增 [test/e2e-guard-live.test.js](test/e2e-guard-live.test.js)（27 项） | ✅ 27/27 |
+| 3. CLI 端到端（真实临时仓库，wt.js 全命令） | 新增 [test/e2e-cli-run.ps1](test/e2e-cli-run.ps1)（23 项） | ✅ 23/23 |
+| 4. 迭代回归（round-7） | 新增 [test/round7-iterations.test.js](test/round7-iterations.test.js)（3 项） | ✅ 3/3 |
+| 5. 加固回归（round-8） | 新增 [test/round8-hardening.test.js](test/round8-hardening.test.js)（17 项） | ✅ 17/17 |
 
 全量回归：`npm test` → **132/132 pass**（round-7/8 已并入套件）。
 
@@ -56,7 +56,7 @@
 
 - **写域**：相对路径写本副本 allow；空路径/跨副本/`.git` 元数据/状态区 deny；**junction 指向主 checkout 的写入被物理身份识别并 deny**（G5）。
 - **读域**：warn 模式读主 checkout → allow + 溯源标记（经 `takePendingMark` 按 callId 取走且一次性）；grep 搜索主根同样标记；sidecar `read_policy:"strict"` → deny。
-- **shell 词法网**：push 受保护分支 deny / push 本分支 allow；主根裸 push deny；`git branch` 涉 worktree 分支 deny（诱饵多分支亦命中）；`git -C` 绝对路径定向主根 deny；绑定态 `checkout main` deny；shell 内 `authorize-main` 动词 deny（人工通道保护）；`Set-Content ../../.git/worktree-guard/...` deny；import 守卫模块 deny；日常命令（npm/Get-ChildItem/引用 store.mjs 的普通参数）无误报。
+- **shell 词法网**：push 受保护分支 deny / push 本分支 allow；主根裸 push deny；`git branch` 涉 worktree 分支 deny（诱饵多分支亦命中）；`git -C` 绝对路径定向主根 deny；绑定态 `checkout main` deny；shell 内 `authorize-main` 动词 deny（人工通道保护）；`Set-Content ../../.git/worktree-guard/...` deny；import 守卫模块 deny；日常命令（npm/Get-ChildItem/引用 store.js 的普通参数）无误报。
 - **C9 沙箱链路**：绑定 + `danger-full-access` → 非生命周期工具 deny、`worktree_*` 豁免（逃生门不被自锁）。
 - **授权治理**：TTL 有效期内写主 checkout + push 放行，过期后自动收回（G18）；sidecar `main_write_whitelist` glob 放行。
 
@@ -73,10 +73,10 @@ help / create（含 task-brief 与 skill 写入）/ status（unbound→rooted→
 
 | # | 发现 | 定性 | 处理 |
 |---|---|---|---|
-| 1 | `node --test test/` 目录形式在 Windows/Node 24 下 MODULE_NOT_FOUND，`npm test` 不可用 | 测试脚本 bug | ✅ 已修复：package.json 改为 `node --test "test/*.test.mjs"` |
+| 1 | `node --test test/` 目录形式在 Windows/Node 24 下 MODULE_NOT_FOUND，`npm test` 不可用 | 测试脚本 bug | ✅ 已修复：package.json 改为 `node --test "test/*.test.js"` |
 | 2 | `create` 写入的 `.dsh/`（task-brief、skill）未跟踪 → 新建副本恒 dirty → 不加 `--force` 时 `remove` 必被"未提交变更"拒绝 | 可用性问题 | ✅ round-7 已修复：`isDirtyForLifecycle` 忽略未跟踪插件自有文件；git 层 remove 由权威闸门接管 |
 | 3 | `main_write_whitelist` 仅 glob 全匹配：`docs/`（目录前缀）永不命中，需写 `docs/*` | 语义注意点 | ✅ README 已补充说明；G19 固化为断言文档 |
 
 ## 结论
 
-三层实测（决策核心、插件装配、CLI 人机面）+ 迭代回归全部通过；测试报告中的三项发现均已在 round-7 迭代中处理。测试资产已入库：`test/e2e-guard-live.test.mjs`、`test/round7-iterations.test.mjs`（并入 `npm test`）、`test/e2e-cli-run.ps1`（手动 E2E，PowerShell）。
+三层实测（决策核心、插件装配、CLI 人机面）+ 迭代回归全部通过；测试报告中的三项发现均已在 round-7 迭代中处理。测试资产已入库：`test/e2e-guard-live.test.js`、`test/round7-iterations.test.js`（并入 `npm test`）、`test/e2e-cli-run.ps1`（手动 E2E，PowerShell）。

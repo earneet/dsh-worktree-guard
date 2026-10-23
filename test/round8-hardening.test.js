@@ -9,13 +9,13 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir, symlink, lstat, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decidePwsh, normalizePwshCommand } from "../src/core/decision.mjs";
-import * as lifecycle from "../src/core/lifecycle.mjs";
-import { isDirtyForLifecycle } from "../src/core/gitops.mjs";
-import { apply } from "../src/index.mjs";
-import { commonDir } from "../src/core/gitops.mjs";
-import { readBinding } from "../src/core/store.mjs";
-import { P } from "./helpers/fixtures.mjs";
+import { decidePwsh, normalizePwshCommand } from "../src/core/decision.js";
+import * as lifecycle from "../src/core/lifecycle.js";
+import { isDirtyForLifecycle } from "../src/core/gitops.js";
+import { apply } from "../src/index.js";
+import { commonDir } from "../src/core/gitops.js";
+import { readBinding } from "../src/core/store.js";
+import { P } from "./helpers/fixtures.js";
 
 const CTX = {
   mainRoot: P("C:/repo"), commonDir: P("C:/repo/.git"),

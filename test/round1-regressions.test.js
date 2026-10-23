@@ -6,13 +6,13 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decideWrite, decidePwsh, decideRead, makeContext } from "../src/core/decision.mjs";
-import { decideToolCall, takePendingMark } from "../src/guard.mjs";
-import { standingLine, sessionStartText } from "../src/notices.mjs";
-import { updateState, addAllowEntry, readAllowlist } from "../src/core/store.mjs";
-import { commonDir } from "../src/core/gitops.mjs";
-import { norm } from "../src/core/paths.mjs";
-import { MAIN, WT_A, WT_B, COMMON } from "./helpers/fixtures.mjs";
+import { decideWrite, decidePwsh, decideRead, makeContext } from "../src/core/decision.js";
+import { decideToolCall, takePendingMark } from "../src/guard.js";
+import { standingLine, sessionStartText } from "../src/notices.js";
+import { updateState, addAllowEntry, readAllowlist } from "../src/core/store.js";
+import { commonDir } from "../src/core/gitops.js";
+import { norm } from "../src/core/paths.js";
+import { MAIN, WT_A, WT_B, COMMON } from "./helpers/fixtures.js";
 
 const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "worktree-alpha" }, { root: WT_B, name: "worktree-beta" }] });
 const bound = { worktree: WT_A, branch: "worktree-alpha" };
@@ -121,7 +121,7 @@ test("RG7 integration: audit sabotage does not weaken the net (blocker)", async 
   sh(d, "git", ["init", "-b", "main"]);
   sh(d, "git", ["config", "user.email", "t@t"]); sh(d, "git", ["config", "user.name", "t"]);
   await writeFile(join(d, "a.txt"), "x"); sh(d, "git", ["add", "."]); sh(d, "git", ["commit", "-m", "i", "-q"]);
-  const lc = await import("../src/core/lifecycle.mjs");
+  const lc = await import("../src/core/lifecycle.js");
   const r = await lc.create({ taskName: "alpha", cwd: d });
   wt = r.worktree;
   cd = await commonDir(wt);
@@ -184,7 +184,7 @@ test("RG12 session-start text: clean repo -> null; bound session -> guidance", a
   assert.equal(await sessionStartText({ cwd: d2, sessionId: "none" }), null);
   await rm(d2, { recursive: true, force: true }).catch(() => {});
   // bound rooted session in the main fixture (bind s2 at wt)
-  const lc = await import("../src/core/lifecycle.mjs");
+  const lc = await import("../src/core/lifecycle.js");
   await lc.enter({ path: wt, sessionId: "s2", cwd: wt });
   const t = await sessionStartText({ cwd: wt, sessionId: "s2" });
   assert.match(t, /本副本/);

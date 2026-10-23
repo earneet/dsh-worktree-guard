@@ -1,4 +1,4 @@
-// index.mjs — cordis plugin entry: assembles the guard, tools, and notices.
+// index.js — cordis plugin entry: assembles the guard, tools, and notices.
 // Layout per the design doc's assembly view (§4):
 //   A/A' guard  -> ctx.on("tools/pre-execute")   (deny/ask only, args frozen by host)
 //   C    tools  -> ctx.tools.register(worktree_* specs)
@@ -9,10 +9,10 @@
 // Config MUST be a schemastery Schema — cordis resolveConfig calls .validate on
 // it; a plain object fails plugin activation (found via real dsh install).
 import z from "@deepseek-ai/schemastery";
-import { decideToolCall, takePendingMark } from "./guard.mjs";
-import { toolSpecs } from "./wt-tools.mjs";
-import { standingLine, sessionStartText } from "./notices.mjs";
-import { resolveBinding } from "./core/binding.mjs";
+import { decideToolCall, takePendingMark } from "./guard.js";
+import { toolSpecs } from "./wt-tools.js";
+import { standingLine, sessionStartText } from "./notices.js";
+import { resolveBinding } from "./core/binding.js";
 
 export const name = "worktree-guard";
 export const inject = ["tools"];
@@ -23,7 +23,7 @@ export const Config = z.object({
   readPolicy: z.string().default("warn"), // warn | strict (sidecar may override)
 });
 
-export { loadSidecar as repoConfig } from "./core/sidecar.mjs";
+export { loadSidecar as repoConfig } from "./core/sidecar.js";
 
 /** Bounded insertion-ordered set (round-5 m4: unbounded session tracking grew forever). */
 function boundedSet(cap) {
@@ -82,7 +82,7 @@ export function apply(ctx, config) {
     if (header?.id && !standingInjected.has(header.id)) {
       standingInjected.add(header.id);
       try {
-        const { commonDir } = await import("./core/gitops.mjs");
+        const { commonDir } = await import("./core/gitops.js");
         const cd = await commonDir(header.cwd);
         const binding = await resolveBinding(cd, { sessionId: header.id, parentSession: header.parentSession });
         if (binding && typeof agent?.inject === "function") agent.inject(standingLine(binding));
@@ -111,8 +111,8 @@ export function apply(ctx, config) {
     try {
       const h = payload?.agent?.session?.header;
       if (!h?.id || !h.cwd) return;
-      const { commonDir } = await import("./core/gitops.mjs");
-      const { readBinding, writeBinding } = await import("./core/store.mjs");
+      const { commonDir } = await import("./core/gitops.js");
+      const { readBinding, writeBinding } = await import("./core/store.js");
       const cd = await commonDir(h.cwd);
       const b = await readBinding(cd, h.id);
       if (b?.worktree && !b.resolved_at) {
@@ -129,8 +129,8 @@ export function apply(ctx, config) {
     },
     // sidecar is MAIN-ROOT based (a rooted session's cwd is the copy)
     config: async (cwd) => {
-      const { listWorktrees } = await import("./core/gitops.mjs");
-      const { loadSidecar } = await import("./core/sidecar.mjs");
+      const { listWorktrees } = await import("./core/gitops.js");
+      const { loadSidecar } = await import("./core/sidecar.js");
       const { mainRoot } = await listWorktrees(cwd).catch(() => ({ mainRoot: null }));
       return mainRoot ? loadSidecar(mainRoot) : {};
     },

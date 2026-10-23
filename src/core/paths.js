@@ -1,4 +1,4 @@
-// core/paths.mjs — path normalization & classification (Windows-first).
+// core/paths.js — path normalization & classification (Windows-first).
 // Ported from opencode-worktree-isolation norm() lineage, hardened per
 // adversarial review: strip \\?\ prefixes BEFORE resolve, unify separators,
 // case-fold on win32, and classify targets against main/other-worktree/.git.

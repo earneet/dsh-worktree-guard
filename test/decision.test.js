@@ -1,11 +1,11 @@
 // Unit tests for the frozen decision tables (§6) — zcode A–R methodology.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { norm, stripExtendedLengthPrefix, classifyTarget, isDotGitPath, extractAbsolutePaths } from "../src/core/paths.mjs";
-import { decideWrite, decideRead, decidePwsh, makeContext } from "../src/core/decision.mjs";
-import { validateAllowlistPath, authorizeValid } from "../src/core/store.mjs";
-import { resolveBinding } from "../src/core/binding.mjs";
-import { MAIN, WT_A, WT_B, COMMON, IS_WIN } from "./helpers/fixtures.mjs";
+import { norm, stripExtendedLengthPrefix, classifyTarget, isDotGitPath, extractAbsolutePaths } from "../src/core/paths.js";
+import { decideWrite, decideRead, decidePwsh, makeContext } from "../src/core/decision.js";
+import { validateAllowlistPath, authorizeValid } from "../src/core/store.js";
+import { resolveBinding } from "../src/core/binding.js";
+import { MAIN, WT_A, WT_B, COMMON, IS_WIN } from "./helpers/fixtures.js";
 
 // fixture world (platform-portable): main + two copies under main/.worktrees
 const ctx = makeContext({
@@ -156,7 +156,7 @@ test("AZ01 missing/expired TTL => invalid (fail-tight)", () => {
 
 test("B01 tier1 own binding wins; tier3 null => open", async () => {
   const dir = await mkTempState();
-  const { writeBinding } = await import("../src/core/store.mjs");
+  const { writeBinding } = await import("../src/core/store.js");
   await writeBinding(dir, "s1", { worktree: WT_A, branch: "b" });
   assert.equal((await resolveBinding(dir, { sessionId: "s1" })).source, "self");
   assert.equal(await resolveBinding(dir, { sessionId: "s9" }), null);
@@ -164,7 +164,7 @@ test("B01 tier1 own binding wins; tier3 null => open", async () => {
 });
 test("B02 tier2 parent chain snapshot, depth-capped", async () => {
   const dir = await mkTempState();
-  const { writeBinding, readBinding } = await import("../src/core/store.mjs");
+  const { writeBinding, readBinding } = await import("../src/core/store.js");
   await writeBinding(dir, "root", { worktree: WT_A, branch: "b" });
   const snap = await resolveBinding(dir, { sessionId: "child", parentSession: "root" });
   assert.equal(snap.source, "inherited");

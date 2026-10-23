@@ -1,5 +1,5 @@
-// core/lifecycle.mjs — worktree lifecycle shared by native tools (wt-tools.mjs)
-// and the human CLI (wt.mjs). Pure orchestration over gitops/store; no cordis.
+// core/lifecycle.js — worktree lifecycle shared by native tools (wt-tools.js)
+// and the human CLI (wt.js). Pure orchestration over gitops/store; no cordis.
 import { join, resolve, dirname } from "node:path";
 import { mkdir, cp, access, writeFile, readdir, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
@@ -7,11 +7,11 @@ import {
   addWorktree, removeWorktree, listWorktrees, commonDir, currentBranch,
   isAncestor, deleteMergedBranch, branchExists, isDirtyForLifecycle, scanAndRemoveAllLinks,
   worktreeNameOf, git,
-} from "./gitops.mjs";
-import { norm } from "./paths.mjs";
-import { writeBinding, deleteBinding, readState, updateState, appendAudit, listBindings } from "./store.mjs";
-import { loadSidecar } from "./sidecar.mjs";
-import { DEFAULT_BRANCH_PREFIX, DEFAULT_WORKTREE_PARENT, STALE_THRESHOLD_MS } from "./constants.mjs";
+} from "./gitops.js";
+import { norm } from "./paths.js";
+import { writeBinding, deleteBinding, readState, updateState, appendAudit, listBindings } from "./store.js";
+import { loadSidecar } from "./sidecar.js";
+import { DEFAULT_BRANCH_PREFIX, DEFAULT_WORKTREE_PARENT, STALE_THRESHOLD_MS } from "./constants.js";
 
 async function exists(p) {
   try {

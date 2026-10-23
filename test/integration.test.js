@@ -6,10 +6,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import * as lifecycle from "../src/core/lifecycle.mjs";
-import { decideToolCall, guardContext } from "../src/guard.mjs";
-import { commonDir, currentBranch } from "../src/core/gitops.mjs";
-import { norm } from "../src/core/paths.mjs";
+import * as lifecycle from "../src/core/lifecycle.js";
+import { decideToolCall, guardContext } from "../src/guard.js";
+import { commonDir, currentBranch } from "../src/core/gitops.js";
+import { norm } from "../src/core/paths.js";
 
 function sh(cwd, cmd, args) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -144,7 +144,7 @@ test("L13 status: merged proof + stale marks; prune drops dead bindings", async 
   assert.ok(alpha, "alpha copy listed");
   assert.equal(alpha.merged_into_head, false); // ahead of main => not merged
   // bind a fake session then prune dry-run (silent >24h via fabricated resolved_at)
-  const { writeBinding, listBindings } = await import("../src/core/store.mjs");
+  const { writeBinding, listBindings } = await import("../src/core/store.js");
   await writeBinding(cd, "ghost", { worktree: norm(wtPath), branch: "worktree-fix-login", resolved_at: "2020-01-01T00:00:00Z" });
   const p1 = await lifecycle.prune({ cwd: repo, dryRun: true });
   assert.ok(p1.dropped.some((d) => d.sessionId === "ghost"));
@@ -154,7 +154,7 @@ test("L13 status: merged proof + stale marks; prune drops dead bindings", async 
 
 test("L14 CLI smoke: status + create + exit roundtrip", async () => {
   const { fileURLToPath } = await import("node:url");
-  const wtCli = fileURLToPath(new URL("../wt.mjs", import.meta.url));
+  const wtCli = fileURLToPath(new URL("../wt.js", import.meta.url));
   const out = sh(repo, "node", [wtCli, "status"]);
   assert.match(out, /mode/);
 });

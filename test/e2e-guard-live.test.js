@@ -1,5 +1,5 @@
 // E2E live tests (guard full-path + plugin apply layer with mock cordis ctx).
-// Complements integration.test.mjs with: shell net edge rows, junction escape,
+// Complements integration.test.js with: shell net edge rows, junction escape,
 // danger-full-access linkage, TTL authorization expiry, sidecar whitelist,
 // post-execute marker pipeline, standing-line/session-start injection.
 import { test, before, after } from "node:test";
@@ -8,11 +8,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as lifecycle from "../src/core/lifecycle.mjs";
-import { decideToolCall, bustGuardContextCache } from "../src/guard.mjs";
-import { apply } from "../src/index.mjs";
-import { commonDir } from "../src/core/gitops.mjs";
-import { updateState } from "../src/core/store.mjs";
+import * as lifecycle from "../src/core/lifecycle.js";
+import { decideToolCall, bustGuardContextCache } from "../src/guard.js";
+import { apply } from "../src/index.js";
+import { commonDir } from "../src/core/gitops.js";
+import { updateState } from "../src/core/store.js";
 
 function sh(cwd, cmd, args) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -92,7 +92,7 @@ test("G6 read 主 checkout warn -> allow + pendingMark 可经 callId 取走", as
   const exec = mkExec({ tool: "read", args: { file_path: join(repo, "a.txt") }, cwd: wt });
   const d = await guard(exec, { readPolicy: "warn" });
   assert.equal(d.kind, "allow");
-  const { takePendingMark } = await import("../src/guard.mjs");
+  const { takePendingMark } = await import("../src/guard.js");
   const m = takePendingMark(exec.callId);
   assert.match(m, /主 checkout/);
   assert.equal(takePendingMark(exec.callId), null, "取走后清空");
@@ -132,7 +132,7 @@ test("G12 pwsh: 绑定态 checkout main -> deny；checkout 其他分支 allow", 
 });
 
 test("G13 pwsh: shell 内 authorize-main 动词 -> deny（人工通道保护）", async () => {
-  const d = await guard(mkExec({ tool: "pwsh", args: { command: "node wt.mjs authorize-main why not" }, cwd: wt }));
+  const d = await guard(mkExec({ tool: "pwsh", args: { command: "node wt.js authorize-main why not" }, cwd: wt }));
   assert.equal(d.kind, "deny");
   assert.match(d.reason, /人工通道|自授/);
 });
@@ -142,11 +142,11 @@ test("G14 pwsh: Set-Content 相对逃逸进 .git/worktree-guard -> deny", async 
 });
 
 test("G15 pwsh: import 守卫模块 -> deny", async () => {
-  assert.equal((await guard(mkExec({ tool: "pwsh", args: { command: 'node -e "import(\'../src/core/store.mjs\')"' }, cwd: wt }))).kind, "deny");
+  assert.equal((await guard(mkExec({ tool: "pwsh", args: { command: 'node -e "import(\'../src/core/store.js\')"' }, cwd: wt }))).kind, "deny");
 });
 
 test("G16 普通命令无误报：npm/pwsh 日常命令 -> allow", async () => {
-  for (const c of ["npm test", "Get-ChildItem", "node script.mjs --input src/store.mjs"]) {
+  for (const c of ["npm test", "Get-ChildItem", "node script.js --input src/store.js"]) {
     assert.equal((await guard(mkExec({ tool: "pwsh", args: { command: c }, cwd: wt }))).kind, "allow", c);
   }
 });

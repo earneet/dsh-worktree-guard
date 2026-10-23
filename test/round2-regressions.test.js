@@ -5,23 +5,23 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decidePwsh, decideWrite, makeContext } from "../src/core/decision.mjs";
-import { decideToolCall } from "../src/guard.mjs";
-import { addAllowEntry, readAllowlist } from "../src/core/store.mjs";
-import { commonDir } from "../src/core/gitops.mjs";
-import { norm } from "../src/core/paths.mjs";
-import { MAIN, WT_A, WT_B, COMMON } from "./helpers/fixtures.mjs";
+import { decidePwsh, decideWrite, makeContext } from "../src/core/decision.js";
+import { decideToolCall } from "../src/guard.js";
+import { addAllowEntry, readAllowlist } from "../src/core/store.js";
+import { commonDir } from "../src/core/gitops.js";
+import { norm } from "../src/core/paths.js";
+import { MAIN, WT_A, WT_B, COMMON } from "./helpers/fixtures.js";
 
 const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "worktree-alpha" }, { root: WT_B, name: "worktree-beta" }] });
 const bound = { worktree: WT_A, branch: "worktree-alpha" };
 
 // ---- R2 #1 blocker: CLI authorize channel unreachable from shell ----
 
-test("R2-1 blocker: wt.mjs authorize-main via shell denied in any form", () => {
+test("R2-1 blocker: wt.js authorize-main via shell denied in any form", () => {
   for (const cmd of [
-    'node wt.mjs authorize-main "x" --ttl-minutes 240',
-    "node F:/tools/wt.mjs authorize_main --ttl-minutes 240",
-    'authorize-main "because" | node wt.mjs',
+    'node wt.js authorize-main "x" --ttl-minutes 240',
+    "node F:/tools/wt.js authorize_main --ttl-minutes 240",
+    'authorize-main "because" | node wt.js',
   ]) {
     const d = decidePwsh({ command: cmd }, ctx, bound);
     assert.equal(d.kind, "deny", `must deny: ${cmd}`);
@@ -84,7 +84,7 @@ test("R2-2 major: allowlist relative path keys against mainRoot, `.` rejected", 
   sh(d, "git", ["init", "-b", "main"]);
   sh(d, "git", ["config", "user.email", "t@t"]); sh(d, "git", ["config", "user.name", "t"]);
   await writeFile(join(d, "a.txt"), "x"); sh(d, "git", ["add", "."]); sh(d, "git", ["commit", "-m", "i", "-q"]);
-  const lc = await import("../src/core/lifecycle.mjs");
+  const lc = await import("../src/core/lifecycle.js");
   wt = (await lc.create({ taskName: "alpha", cwd: d })).worktree;
   cd = await commonDir(wt);
   await lc.enter({ path: wt, sessionId: "s1", cwd: wt });
@@ -118,7 +118,7 @@ test("R2-7 low: three concurrent grants all persist", async () => {
 
 test("R2-5 medium: new file written through a junction into main is denied", async () => {
   // isolate from R2-2's docs grant
-  const { clearAllowlist } = await import("../src/core/store.mjs");
+  const { clearAllowlist } = await import("../src/core/store.js");
   await clearAllowlist(cd);
   // junction inside the copy pointing at <main>/docs
   await symlink(join(repo, "docs"), join(wt, "linkdocs"), "junction");

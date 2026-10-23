@@ -1,17 +1,17 @@
-// wt-tools.mjs — the worktree_* native tools (create/enter/status/prune/remove,
+// wt-tools.js — the worktree_* native tools (create/enter/status/prune/remove,
 // authorize-main, allow, etc.). Component C in the design doc (§8).
 // DSH defineTool contract (measured via real host load, round-10): every tool
 // MUST declare `output: { schema, render }` — `schema` is the object-root JSON
 // Schema of the value `execute` RETURNS, `render(args, value)` produces the
 // display blocks. Returning `{ content: [...] }` wrappers is not the contract.
-import * as lifecycle from "./core/lifecycle.mjs";
-import { commonDir, listWorktrees } from "./core/gitops.mjs";
-import { bustGuardContextCache } from "./guard.mjs";
-import { updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist } from "./core/store.mjs";
-import { loadSidecar } from "./core/sidecar.mjs";
-import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, AUTHORIZE_TTL_CAP_MIN, ALLOW_TTL_CAP_MIN } from "./core/constants.mjs";
+import * as lifecycle from "./core/lifecycle.js";
+import { commonDir, listWorktrees } from "./core/gitops.js";
+import { bustGuardContextCache } from "./guard.js";
+import { updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist } from "./core/store.js";
+import { loadSidecar } from "./core/sidecar.js";
+import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, AUTHORIZE_TTL_CAP_MIN, ALLOW_TTL_CAP_MIN } from "./core/constants.js";
 import { resolve as resolvePath } from "node:path";
-import { norm } from "./core/paths.mjs";
+import { norm } from "./core/paths.js";
 
 const blocks = (text) => [{ type: "text", text }];
 

@@ -5,9 +5,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decidePwsh, makeContext } from "../src/core/decision.mjs";
+import { decidePwsh, makeContext } from "../src/core/decision.js";
 import { fileURLToPath } from "node:url";
-import { MAIN, WT_A, COMMON } from "./helpers/fixtures.mjs";
+import { MAIN, WT_A, COMMON } from "./helpers/fixtures.js";
 
 const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "a" }] });
 const bound = { worktree: WT_A, branch: "worktree-alpha" };
@@ -15,18 +15,18 @@ const bound = { worktree: WT_A, branch: "worktree-alpha" };
 test("R4-1 guard-module rule: precise context, no user-file false positives", () => {
   // OUR modules (src/ or worktree-guard/ context, or the CLI entry) -> deny
   for (const cmd of [
-    `node -e "import('./src/core/store.mjs').then(m=>m.updateState(1))"`,
-    `node -e "import('./worktree-guard/src/core/lifecycle.mjs')"`,
-    `node -e "import('./wt.mjs')"`,
-    `node -e "const g=require('./src/guard.mjs')"`,
+    `node -e "import('./src/core/store.js').then(m=>m.updateState(1))"`,
+    `node -e "import('./worktree-guard/src/core/lifecycle.js')"`,
+    `node -e "import('./wt.js')"`,
+    `node -e "const g=require('./src/guard.js')"`,
   ]) {
     assert.equal(decidePwsh({ command: cmd }, ctx, bound).kind, "deny", `must deny: ${cmd}`);
   }
   // user-owned same-name modules without our context -> allow (round-4 fix)
   for (const cmd of [
-    `node -e "import('./store.mjs')"`,
-    `node -e "import('./guard.mjs')"`,
-    `node -e "import('./lifecycle.mjs')"`,
+    `node -e "import('./store.js')"`,
+    `node -e "import('./guard.js')"`,
+    `node -e "import('./lifecycle.js')"`,
   ]) {
     assert.equal(decidePwsh({ command: cmd }, ctx, bound).kind, "allow", `must allow: ${cmd}`);
   }
@@ -40,7 +40,7 @@ test("R4-2 CLI authorize-main refuses non-TTY (model shells) structurally", asyn
   sh(["init", "-b", "main"]);
   sh(["config", "user.email", "t@t"]); sh(["config", "user.name", "t"]);
   await writeFile(join(d, "a"), "x"); sh(["add", "."]); sh(["commit", "-m", "i", "-q"]);
-  const cli = fileURLToPath(new URL("../wt.mjs", import.meta.url));
+  const cli = fileURLToPath(new URL("../wt.js", import.meta.url));
   let failed = false;
   try {
     // execFileSync pipes stdout/stderr -> stdin is not a TTY
@@ -49,8 +49,8 @@ test("R4-2 CLI authorize-main refuses non-TTY (model shells) structurally", asyn
     failed = true;
   }
   assert.ok(failed, "non-TTY authorize-main must exit non-zero");
-  const { readState } = await import("../src/core/store.mjs");
-  const { commonDir } = await import("../src/core/gitops.mjs");
+  const { readState } = await import("../src/core/store.js");
+  const { commonDir } = await import("../src/core/gitops.js");
   const st = await readState(await commonDir(d));
   assert.equal(st.allow_main_writes?.allow_main_writes, undefined, "no grant may be written via non-TTY CLI");
 });

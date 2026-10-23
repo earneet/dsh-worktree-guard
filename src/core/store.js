@@ -1,9 +1,9 @@
-// core/store.mjs — state under <git-common-dir>/worktree-guard/.
+// core/store.js — state under <git-common-dir>/worktree-guard/.
 // bindings/<session>.json is THE binding truth; state.json is informational
 // only (zcode lineage: state.json never produces bindings). Atomic writes.
 import { mkdir, readFile, writeFile, rename, readdir, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { norm } from "./paths.mjs";
+import { norm } from "./paths.js";
 
 export const SCHEMA_VERSION = 1;
 
@@ -160,5 +160,5 @@ export function authorizeValid(state) {
   return g;
 }
 
-// TTL defaults live in core/constants.mjs (single source).
-export { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN } from "./constants.mjs";
+// TTL defaults live in core/constants.js (single source).
+export { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN } from "./constants.js";

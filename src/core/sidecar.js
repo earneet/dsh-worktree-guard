@@ -1,4 +1,4 @@
-// core/sidecar.mjs — <repo>/.dsh/worktree-guard.json loader (P7: DSH config
+// core/sidecar.js — <repo>/.dsh/worktree-guard.json loader (P7: DSH config
 // space only). Accepts BOTH snake_case (the design doc's §13 spelling) and
 // camelCase keys.
 // Always resolved against the repo MAIN ROOT (not the session cwd): rooted
@@ -7,7 +7,7 @@
 // here silently disables user configuration (round-5 B1).
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { norm } from "./paths.mjs";
+import { norm } from "./paths.js";
 
 export async function loadSidecar(repoRoot) {
   const key = norm(repoRoot ?? process.cwd());

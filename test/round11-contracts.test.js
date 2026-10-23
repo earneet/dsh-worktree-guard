@@ -4,7 +4,7 @@
 // with one argument, leaving `description: undefined` in boolean parameters.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolSpecs } from "../src/wt-tools.mjs";
+import { toolSpecs } from "../src/wt-tools.js";
 
 function deepEq(a, b) {
   if (a === b) return true;
@@ -64,8 +64,8 @@ test("R11-2 every tool declares output {schema, render} (defineTool contract)", 
 // round-12 dogfood finding: working INSIDE the plugin's own repo must not trip
 // the state-area shell net — the old bare "worktree-guard/" pattern matched
 // F:\...\dsh-worktree-guard\package.json and denied all development commands.
-import { decidePwsh } from "../src/core/decision.mjs";
-import { P } from "./helpers/fixtures.mjs";
+import { decidePwsh } from "../src/core/decision.js";
+import { P } from "./helpers/fixtures.js";
 const CTX12 = {
   mainRoot: P("C:/repo"), commonDir: P("C:/repo/.git"),
   worktrees: [{ root: P("C:/repo/.worktrees/worktree-x"), name: "worktree-x" }],
@@ -75,7 +75,7 @@ test("R12-1 state-area net requires .git context; plugin's own repo path is allo
   // own-repo paths (no .git/worktree-guard segment) -> allow
   for (const cmd of [
     `Get-Content F:\\workspace_2\\dsh-worktree-guard\\package.json`,
-    `node F:/workspace_2/dsh-worktree-guard/wt.mjs status`,
+    `node F:/workspace_2/dsh-worktree-guard/wt.js status`,
     `npm --prefix dsh-worktree-guard test`,
   ]) {
     assert.equal(decidePwsh({ command: cmd }, CTX12, null).kind, "allow", `must allow: ${cmd}`);

@@ -11,8 +11,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as lifecycle from "../src/core/lifecycle.mjs";
-import { isDirty, isDirtyForLifecycle } from "../src/core/gitops.mjs";
+import * as lifecycle from "../src/core/lifecycle.js";
+import { isDirty, isDirtyForLifecycle } from "../src/core/gitops.js";
 
 function sh(cwd, cmd, args) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

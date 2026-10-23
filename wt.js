@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// wt.mjs — human/script CLI over the same core as the native tools (§8).
-// Zero-dependency ESM (zcode wt.mjs lineage). Sessions pass --session explicitly
+// wt.js — human/script CLI over the same core as the native tools (§8).
+// Zero-dependency ESM (zcode wt.js lineage). Sessions pass --session explicitly
 // (CLI runs outside a DSH session).
 import { parseArgs } from "node:util";
 import { cwd as processCwd } from "node:process";
-import * as lifecycle from "./src/core/lifecycle.mjs";
-import { commonDir } from "./src/core/gitops.mjs";
-import { loadSidecar as repoConfig } from "./src/core/sidecar.mjs";
-import { updateState, appendAudit } from "./src/core/store.mjs";
-import { AUTHORIZE_TTL_CAP_MIN } from "./src/core/constants.mjs";
+import * as lifecycle from "./src/core/lifecycle.js";
+import { commonDir } from "./src/core/gitops.js";
+import { loadSidecar as repoConfig } from "./src/core/sidecar.js";
+import { updateState, appendAudit } from "./src/core/store.js";
+import { AUTHORIZE_TTL_CAP_MIN } from "./src/core/constants.js";
 
 const HELP = `wt — dsh-worktree-guard CLI（与 worktree_* 工具同一 core）
 

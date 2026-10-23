@@ -1,0 +1,7 @@
+# dsh-hello-time bundle patch: mount the hello-time cordis plugin.
+# - insert 下的每一项 = 往宿主里插一个插件
+#   id   : 宿主内的唯一标识（随便起，别和别的插件重名）
+#   name : npm 包名，宿主据此找到并加载你的代码
+- insert:
+    - id: hello-time
+      name: dsh-hello-time

@@ -1,11 +1,11 @@
-// core/binding.mjs — three-tier binding resolution:
+// core/binding.js — three-tier binding resolution:
 //   1. own bindings/<session>.json
 //   2. lazy parentSession chain walk (native DSH lineage; depth cap 10), snapshot to own file
 //   3. null => open (host sandbox semantics; P1)
 // (tier model per design §10)
 // Parent ids arrive from the caller (guard passes exec.agent.session.header.parentSession).
-import { readBinding, writeBinding } from "./store.mjs";
-import { norm } from "./paths.mjs";
+import { readBinding, writeBinding } from "./store.js";
+import { norm } from "./paths.js";
 
 export const MAX_LINEAGE_DEPTH = 10;
 

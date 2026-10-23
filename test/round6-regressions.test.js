@@ -6,8 +6,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decideToolCall } from "../src/guard.mjs";
-import * as lifecycle from "../src/core/lifecycle.mjs";
+import { decideToolCall } from "../src/guard.js";
+import * as lifecycle from "../src/core/lifecycle.js";
 
 function sh(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -38,7 +38,7 @@ test("R6-1 bare repo + worktree layout: state-area write denied (commonDir carri
   await lifecycle.enter({ path: wt, sessionId: "s1", cwd: wt });
 
   // state area lives under the BARE common dir — previously a dead rule
-  const { commonDir } = await import("../src/core/gitops.mjs");
+  const { commonDir } = await import("../src/core/gitops.js");
   const cd = await commonDir(wt);
   const w = await decideToolCall(mkExec({ tool: "write", args: { file_path: join(cd, "worktree-guard", "state.json") }, cwd: wt }), {});
   assert.equal(w.kind, "deny", "bare-layout state-area write must be denied");

@@ -18,11 +18,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    # Long temp path on Windows: 8.3 short names (RUNNER~1) break the
-    # path-identity integration tests.
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,6 +25,11 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm test
+        # Long temp path on Windows: 8.3 short names (RUNNER~1) break the
+        # path-identity integration tests.
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
 
   package-smoke:
     name: package smoke

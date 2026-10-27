@@ -70,8 +70,11 @@ node wt.js status
 ## 开发
 
 ```bash
-node --test   # 决策表单测 + 真实临时仓库集成测 + 三轮对抗审查回归（见 test/）
+npm test              # 决策表单测 + 真实临时仓库集成测 + 回归（见 test/）
+npm run verify:package # 打包冒烟：npm pack → 解包 → 跑发布的 wt.js / CLI_PATH / 非 TTY 门禁
 ```
+
+CI 在 ubuntu-latest 与 windows-latest 上跑全量测试，另跑打包冒烟；release 工作流在发布前校验 `v<tag>` 与 `package.json` 版本一致。
 
 零依赖纯 ESM（Node ≥20，Windows 优先适配）。
 

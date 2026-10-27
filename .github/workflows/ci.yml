@@ -1,6 +1,8 @@
-# CI: full test suite on every push/PR (git available on runners for
-# the real-repo integration tests).
 name: CI
+
+# Full test suite on both platforms the product targets (Windows first), plus a
+# packaging smoke that runs the SHIPPED tarball layout (catches CLI-path/style
+# bugs that source-tree unit tests cannot).
 on:
   push:
     branches: [master]
@@ -8,7 +10,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,3 +23,14 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm test
+
+  package-smoke:
+    name: package smoke (npm pack -> extract -> CLI/CLI_PATH/non-TTY gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run verify:package

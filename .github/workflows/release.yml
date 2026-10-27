@@ -1,14 +1,23 @@
-# Release: tag v* -> run the full suite, then publish to npm.
-# Requires the NPM_TOKEN secret (npm automation token) in repo settings.
 name: Release
+
+# Tag v* -> full multi-platform test + package smoke + tag/version preflight,
+# then publish to npm. A tag that does not match package.json never publishes.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,11 +26,43 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm test
 
-  publish:
-    needs: test
+  package-smoke:
+    name: package smoke
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run verify:package
+
+  preflight:
+    name: tag/version preflight
+    needs: [test, package-smoke]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(node -p "require('./package.json').version")"
+          echo "tag=v$tag package=$ver"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag v$tag does not match package.json version $ver"
+            exit 1
+          fi
+
+  publish:
+    name: publish to npm
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -1,6 +1,8 @@
 // guard.js — the tools/pre-execute safety net for writes, reads, and shells
 // (component A/A' in the design doc, §4). deny-only by contract (DSH cannot
-// rewrite args — contract C1); ask-gate for authorize/allow tools (P4).
+// rewrite args — contract C1); ask-gate for authorize/allow tools (P4), with a
+// policy probe that turns a guaranteed-to-fail ask into an actionable deny when
+// the session's approval policy is "never" (round-13).
 // Fail policy (§11): a throw here is fail-closed for free (host waterfall
 // catches -> tool error). Read-side and shell-side judgments self-catch to
 // fail-open — but a DENY decision already reached is returned regardless of
@@ -12,7 +14,8 @@ import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeName
 import { norm, physicalAncestorKey, classifyTarget } from "./core/paths.js";
 import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/store.js";
 import { loadSidecar } from "./core/sidecar.js";
-import { GUARD_CTX_TTL_MS } from "./core/constants.js";
+import { GUARD_CTX_TTL_MS, DEFAULT_PROTECTED_BRANCHES } from "./core/constants.js";
+import { manualOrCliHint, humanChannelHint } from "./core/cli-path.js";
 
 const ctxCache = new Map(); // commonDir -> { at, ctx }
 
@@ -52,6 +55,70 @@ const READ_TOOLS = new Set(["read", "read_image"]);
 const SEARCH_TOOLS = new Set(["glob", "grep"]);
 const SHELL_TOOLS = new Set(["pwsh", "bash"]);
 const GATED_TOOLS = new Set(["worktree_authorize_main", "worktree_allow"]); // P4 ask gate
+
+/** Who owns the ask gate (used by index.js to probe policy only for these). */
+export function isGatedTool(name) {
+  return GATED_TOOLS.has(name);
+}
+
+/**
+ * Read the session's EFFECTIVE approval policy when the host exposes its
+ * approval service (capability probe, C11): `overrideOf(session)` is the last
+ * logged `approval/policy`, else the service config default. Absent/unknown =>
+ * undefined and the old ask path stays (the host owns that messaging).
+ */
+async function approvalPolicyOf(session, opts) {
+  if (!session?.header || typeof opts?.approvalPolicyOf !== "function") return undefined;
+  try {
+    const policy = await opts.approvalPolicyOf(session);
+    return typeof policy === "string" ? policy : undefined;
+  } catch {
+    return undefined; // probe failure must never change the ask path
+  }
+}
+
+/**
+ * With approval policy "never" the host rejects the ask deterministically
+ * BEFORE any answerer runs — the user never sees a prompt while the model sees
+ * `the user rejected tool` (round-13 live finding; incident session had
+ * switched to the danger-full-access preset, which bundles approval=never).
+ * Returning deny with the human-channel fallback stops the retry loop.
+ */
+// The human-channel copy lives in ONE place (cli-path.js) so decision.js and
+// guard.js cannot drift; only the tool-specific fallback branch differs.
+function humanFallback(toolName) {
+  return toolName === "worktree_allow"
+    ? `请用户切换到会弹确认的权限预设后重试，或由用户自行在目标仓库的 .dsh/worktree-guard.json 中配置 main_write_whitelist（等价放行；glob 全匹配，如 "docs/*"）；插件不代写用户配置。`
+    : `${manualOrCliHint()}；也可切换会弹确认的权限预设后重试。`;
+}
+
+export function gateUnavailableReason(toolName) {
+  return {
+    kind: "deny",
+    reason: `[worktree-guard] 已阻止 ${toolName}：本会话审批提示被禁用（approval=never），ask 门必然被宿主自动拒绝。\n原因：审批请求在到达用户界面前就被确定拒绝——会话内没有可用的真人确认通道（常由 danger-full-access 权限预设带来）。\n下一步：${humanFallback(toolName)}`,
+  };
+}
+
+// Host outcome vocabulary: policy "never" collapses into "rejected" and the
+// no-answerer case into "no approval channel is available" (dsh-tools).
+const GATE_REJECTION_RE = /rejected tool|rejected by user|no approval channel is available|approval .*cancelled/i;
+
+/**
+ * post-execute advisory for gated tools the host refused. The error text alone
+ * cannot distinguish "the user declined" from "no prompt was ever shown", so
+ * the marker names both, using the effective policy (re-probed by index.js) to
+ * pick the precise cause, and points at the per-tool human channel (P3:
+ * deviations visible; issue suggestions #1/#5).
+ */
+export function gateRejectionMark(exec, result, policy) {
+  if (!GATED_TOOLS.has(exec?.name) || !result?.isError) return null;
+  const text = String(result?.error?.message ?? result?.content?.[0]?.text ?? "");
+  if (!GATE_REJECTION_RE.test(text)) return null;
+  const cause = policy === "never"
+    ? `审批提示被禁用（approval=never）时宿主不弹框、直接返回 "the user rejected tool"。`
+    : `宿主返回了拒绝，但未必是用户反悔——也可能是审批通道不可用（无应答者或策略在调用间切换）。`;
+  return `[worktree-guard] 授权工具被宿主拒绝，不一定是用户拒绝：${cause}不要立即重复调用；${humanFallback(exec.name)}`;
+}
 
 /** Pending post-execute markers keyed by callId (opencode pendingShellRewrites lineage; cap 256). */
 const pendingMarks = new Map();
@@ -121,9 +188,13 @@ async function sandboxDenied(binding, opts, header) {
 export async function decideToolCall(exec, opts = {}) {
   const toolName = exec?.name;
   if (GATED_TOOLS.has(toolName)) {
+    // capability probe first: a "never" session has no answerer by design, so
+    // asking would guarantee the misleading host rejection (round-13).
+    const session = exec?.agent?.session;
+    if ((await approvalPolicyOf(session, opts)) === "never") return gateUnavailableReason(toolName);
     return {
       kind: "ask",
-      reason: `[worktree-guard] ${toolName} 已挂起，等待用户在界面上确认。仅在用户本轮明确同意后调用；每次调用都会再次询问用户。`,
+      reason: `[worktree-guard] ${toolName} 已挂起，等待用户在界面上确认。仅在用户本轮明确同意后调用；每次调用都会再次询问用户。若本会话审批提示被禁用，宿主会直接自动拒绝——此时不要重复调用，改用人工通道：${humanChannelHint()}。`,
     };
   }
 
@@ -131,20 +202,28 @@ export async function decideToolCall(exec, opts = {}) {
   const cwd = header?.cwd;
   if (!cwd) return { kind: "allow" }; // no session context -> host semantics only (P1)
 
+  // Defaults are unioned in BEFORE the first context build: a plugin Config that
+  // overrides protectedBranches must not drop master/main from the push net
+  // (P1; round-13 audit: defaults were lost when no sidecar branch keys existed).
+  const baseProt = [...new Set([...DEFAULT_PROTECTED_BRANCHES, ...(Array.isArray(opts.protectedBranches) ? opts.protectedBranches : [])])];
   let gc;
   try {
-    gc = await guardContext(cwd, opts);
+    gc = await guardContext(cwd, { ...opts, protectedBranches: baseProt });
   } catch {
     gc = null; // not a git repo -> nothing to guard
   }
   if (!gc) return { kind: "allow" };
 
   // sidecar merge (round-5 B1): repo-level config lives at the MAIN ROOT (a
-  // rooted session's cwd is the copy, whose .dsh has no sidecar) and wins over
-  // plugin defaults.
+  // rooted session's cwd is the copy, whose .dsh has no sidecar). Config may
+  // ADD protected branches but never REMOVE the defaults/plugin set: the push
+  // net is monotonic (P1), otherwise a sidecar edit would disable the only
+  // guard on a network operation (round-13 audit finding).
   const sidecar = await loadSidecar(gc.ctx.mainRoot).catch(() => ({}));
+  const sideProt = Array.isArray(sidecar.protectedBranches) ? sidecar.protectedBranches : [];
+  const protectedBranches = [...new Set([...baseProt, ...sideProt].filter((s) => typeof s === "string" && s.trim() !== ""))];
   const effOpts = {
-    protectedBranches: sidecar.protectedBranches ?? opts.protectedBranches,
+    protectedBranches,
     readPolicy: sidecar.readPolicy ?? opts.readPolicy,
     branchPrefix: sidecar.branchPrefix ?? opts.branchPrefix,
     sandboxModeOf: opts.sandboxModeOf,

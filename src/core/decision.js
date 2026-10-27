@@ -1,11 +1,13 @@
 // core/decision.js — the frozen decision tables for write/read/shell calls.
-// Every row maps to tests. Design doc §6. Pure functions: no fs, no git. All
-// inputs are pre-normalized by the caller (guard.js assembles the runtime
-// context).
+// Every row maps to tests. Design doc §6. Side-effect-free functions: no fs, no
+// git, no network (the one environment dependency is the module-resolved CLI
+// path used in human-channel copy, see cli-path.js). All inputs are
+// pre-normalized by the caller (guard.js assembles the runtime context).
 
 import { norm, isUnder, classifyTarget, extractAbsolutePaths } from "./paths.js";
 import { matchesMainWhitelist } from "./sidecar.js";
 import { DEFAULT_PROTECTED_BRANCHES as PROTECTED_DEFAULT, DEFAULT_BRANCH_PREFIX } from "./constants.js";
+import { manualOrCliHint } from "./cli-path.js";
 
 // ---------- context assembly (caller: guard.js) ----------
 
@@ -62,6 +64,12 @@ export function decideWrite(rawPath, baseDir, ctx, binding, auth = {}) {
   }
   if (cls.kind === "git-meta") {
     return deny("write", rawPath, "目标位于 .git / git 元数据", "不要写版本库元数据；如需改配置请询问用户在仓库外操作。");
+  }
+  // Repo security config is USER-owned (P7/P1): a model-writable sidecar could
+  // empty protected_branches (disabling the push net) or whitelist itself into
+  // main. Humans edit the file directly; agents use the gated tools instead.
+  if (target === norm(`${ctx.mainRoot}/.dsh/worktree-guard.json`)) {
+    return deny("write", rawPath, "目标是 worktree-guard 安全配置（.dsh/worktree-guard.json）", "安全配置由用户直接编辑（插件不代写）；模型侧请改用 worktree_allow / worktree_authorize_main 走人工门，或请用户手动修改。");
   }
   // cross-copy writes: ALWAYS-ON net (v0.1/zcode lineage) — checked before the
   // unbound early-return so it holds in any state (P1: stricter than host, never wider).
@@ -129,17 +137,73 @@ export function normalizePwshCommand(raw) {
 }
 // checkout/switch to protected — tolerates retargeting prefix args (e.g. `git -C . checkout main`)
 const RE_CHECKOUT_PROTECTED = /git\s+(?:\S+\s+)*?(?:checkout|switch)\s+(?:-\S+\s+)*(?:master|main)\b/i;
-// human-only authorization (P4): the model must NEVER say authorize-main in a
-// shell — the only sanctioned path is the ask-gated worktree_authorize_main tool.
-// (Humans use their own terminal, which does not pass this net; rename-the-CLI
-// variants fall out because we key on the verb, not the file name.)
+// Ask-gated tools only work where the host can show an interactive approval
+// prompt. A session whose approval policy is "never" (the danger-full-access
+// permission preset sets exactly that) is rejected deterministically before any
+// prompt — the human-only CLI channel is then the only escape. Every copy that
+// points at the gate names this fallback (round-13 live finding: the old text
+// dead-ended approvals-disabled sessions).
+const HUMAN_GATE_HINT = `若本会话审批提示被禁用（approval=never，常由 danger-full-access 权限预设带来）或提示被自动拒绝：不要重复调用授权工具——${manualOrCliHint()}；也可切换会弹确认的权限预设后重试。`;
+
+// Brief form for push denies: keep the single-turn next action short; the full
+// CLI path / typed-code / TTL detail lives in the gated tools' own deny+marker
+// (design §7 copy budget: a 300-char conditional paragraph on every push deny
+// dilutes the instruction and repeats what the tool will say anyway).
+const HUMAN_GATE_BRIEF = `若授权工具返回"审批被禁用"或自动拒绝，不要重复调用：请用户手动推送/合并，或按该工具消息中的方式用插件 CLI 完成授权（仓库级 TTL）。`;
+
+// human-only authorization (P4): fail-closed on the literal verb in EITHER the
+// raw text or the normalized (quote-stripped, wrapper-folded) view — a command
+// that can produce `authorize-main` in argv must not get the benefit of the
+// doubt. Round-13 (live finding) added exactly ONE narrow escape hatch: a
+// command that is nothing but a chain of non-executing inspectors (doc
+// read/search) may mention the verb as DATA, because denying those broke
+// legitimate troubleshooting. The hatch requires every `; | &`/newline segment
+// to start with an inspector and forbids launchers, scriptblocks and
+// substitution — anything that can run the CLI stays denied.
+//
+// Why not "pin the actual invocation position" alone: the CLI's
+// `process.stdin.isTTY` check is NOT structural — a launched child
+// (`Start-Process`, `conhost`, python CREATE_NEW_CONSOLE, …) reports isTTY=true
+// with no human present. The CLI now also requires a TYPED per-invocation code
+// (wt.js → core/human-gate.js), and this net stays categorical for every verb
+// sighting outside the inspector hatch.
 const RE_AUTHORIZE_VERB = /\bauthorize[-_]main\b/i;
+// Genuinely read-only inspectors only: writer aliases (echo/Write-Host/
+// Write-Output) are deliberately absent, because the hatch's contract is
+// "cannot modify anything" — the typed CLI code, not this lexical hatch, is the
+// real barrier (see human-gate.js).
+const READ_ONLY_INSPECTOR = /^\s*(?:Get-Content|Get-ChildItem|Get-Item|Select-String|Select-Object|Sort-Object|Measure-Object|Format-Table|Format-List|Out-String|type|cat|dir|ls|findstr|grep|rg|head|tail|wc|git\s+(?:grep|log|show|diff|status|blame|ls-files|rev-parse))\b/i;
+// Flags that execute or paginate a command supplied inline (git grep -O<pager>,
+// rg --pre, git --ext-diff/--textconv, file output) — an inspection becomes
+// execution/writing and must not ride the hatch.
+const INSPECTOR_EXEC_FLAG = /(?:^|\s)(?:--pre(?:-glob)?|--hostname-bin|--open-files-in-pager|--exec(?:=|\s)|--ext-diff|--textconv|--show-signature|--paginate|--output(?:=|\s)|-[A-Za-z]*O\S*)/i;
+const READONLY_CHAIN_SEP = /[\n\r;|&]/;
+const FD_DUP_REDIRECT = /\d?>&\d+/g;
+
+/** True only for a command that is provably a pure inspector chain (see above). */
+export function isReadOnlyDocInspection(rawCmd) {
+  const s = String(rawCmd ?? "");
+  if (/[$`{}()]/.test(s)) return false; // command substitution / subexpressions / scriptblocks
+  // File redirection makes the chain a writer; `2>&1` (fd duplication) is not a
+  // file write and stays allowed so ordinary `… 2>&1` searches keep working.
+  if (/[<>]/.test(s.replace(FD_DUP_REDIRECT, " "))) return false;
+  const code = s.replace(FD_DUP_REDIRECT, " ");
+  return code.split(READONLY_CHAIN_SEP).every((seg) => {
+    const t = seg.trim();
+    if (t === "") return true;
+    if (!READ_ONLY_INSPECTOR.test(t)) return false;
+    return !INSPECTOR_EXEC_FLAG.test(t); // rg --pre / git grep -O …
+  });
+}
+
 // guard state area reachable from the shell (round-3 blocker): relative .. into
-// .git, or any .git/worktree-guard/ path. round-12 dogfood fix: the pattern must
-// require the .git/ context — a bare "worktree-guard/" also matched THIS plugin's
-// own repo path (F:\...\dsh-worktree-guard\package.json) and denied all work in it.
+// .git, or any .git/worktree-guard path — the TRAILING SEPARATOR is optional:
+// round-13 audit found `cd .git/worktree-guard` + a relative write bypassed the
+// old `[\/\\]`-required pattern and forged state in a throw-away repo.
+// round-12 dogfood fix kept: the pattern must require the .git/ context — a bare
+// "worktree-guard/" also matched THIS plugin's own repo path and denied all work.
 const RE_RELATIVE_DOTGIT = /(\.\.[\/\\])+[^;&|`]*\.git\b/i;
-const RE_STATE_AREA = /(?:^|[^a-z0-9_.])\.git[\/\\]worktree-guard[\/\\]/i;
+const RE_STATE_AREA = /(?:^|[^a-z0-9_.])\.git[\/\\]worktree-guard(?=[\/\\]|\b)/i;
 // guard-module imports: require OUR package context (worktree-guard/ or src/
 // path segment) so user-owned store.js/guard.js are not false-positived;
 // the wt.js CLI entry is netted by name (round-4 tightening).
@@ -165,9 +229,13 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
 
   // 0) human-only authorization channels: the model must never reach authorize
   //    semantics through a shell, whatever the entry point (round-2/3 blockers).
-  //    0/0b test the RAW text: their patterns depend on quoting shape (R4-1).
-  if (RE_AUTHORIZE_VERB.test(rawCmd)) {
-    return deny("pwsh", summarizeOf(), "试图经 shell 自授主分支写权限", "authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。");
+  //    Fail closed on the verb in the RAW text AND in the NORMALIZED view
+  //    (quote strips catch `author""ize-main`; wrapper folding catches
+  //    `pwsh -Command "…"`), with ONE inspector-only escape hatch for the
+  //    issue-#2 doc-search false positive. 0b below still tests the RAW text:
+  //    its patterns depend on quoting shape (R4-1).
+  if ((RE_AUTHORIZE_VERB.test(rawCmd) || RE_AUTHORIZE_VERB.test(cmd)) && !isReadOnlyDocInspection(rawCmd)) {
+    return deny("pwsh", summarizeOf(), "试图经 shell 自授主分支写权限", `authorize-main 是人工通道；模型侧请使用 worktree_authorize_main 工具（需用户界面确认）。${HUMAN_GATE_HINT}`);
   }
   // 0b) guard state area is unreachable from the shell — write-tool rule 1's
   //     shell twin (round-3 blocker: Set-Content ../../.git/worktree-guard/...).
@@ -184,9 +252,9 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
     // model assume a false positive and retry with another wrapper. Wording
     // names no detection dimension (P6 copy rule: effects, not mechanisms).
     if (!RE_PUSH.test(rawCmd)) {
-      return deny("pwsh", summarizeOf(), "该命令经拼接或包装后仍会将提交推送到受保护分支；包装形式不改变拦截结果", "如确需推送受保护分支，取得用户同意后调用 worktree_authorize_main（TTL 授权后可执行等效 git 命令）。");
+      return deny("pwsh", summarizeOf(), "该命令经拼接或包装后仍会将提交推送到受保护分支；包装形式不改变拦截结果", `如确需推送受保护分支，取得用户同意后调用 worktree_authorize_main（TTL 授权后可执行等效 git 命令）。${HUMAN_GATE_BRIEF}`);
     }
-    return deny("pwsh", summarizeOf(), `push 目标包含受保护分支（${prot.join("/")}）`, "合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。");
+    return deny("pwsh", summarizeOf(), `push 目标包含受保护分支（${prot.join("/")}）`, `合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。${HUMAN_GATE_BRIEF}`);
   }
   // 1b) push DELETING a worktree branch (remote deletion, round-2 fix) — only the
   //     destructive forms (`--delete`/`-d`, or `:branch` refspec); pushing own branch stays open.
@@ -225,7 +293,7 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
     });
     const pushesCurrent = implicit || dstMovesCurrent;
     if (!authorized && pushesCurrent) {
-      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，无显式 refspec 的 push 等同推送主干`, "请显式指定目标分支/标签，或走授权流程。");
+      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，无显式 refspec 的 push 等同推送主干`, `请显式指定目标分支/标签，或经用户同意后调用 worktree_authorize_main。${HUMAN_GATE_BRIEF}`);
     }
   }
   // 3) any `git branch` command touching a worktree branch token — decoy-first

@@ -1,6 +1,18 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-10-14 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（132 + 23 项）**
+日期：2026-10-14 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-13 后全量 163/163）**
+
+## 审批禁用会话修复轮（round-13，issue #1 驱动）
+
+GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell 词法网误伤文档检索）经宿主源码与事故会话日志实证后修复：
+
+- **ask 门必败检测（行为，高）**：宿主 `dsh-user-approval` 在 `policy:"never"` 时于应答者 waterfall **之前**确定返回 `rejected`，`dsh-tools` 统一渲染 `the user rejected tool "X"`（无弹窗）——事故会话（2026-10-27）中三次调用均在 1ms 内 `asked`+`decided:"rejected"`，证实不是用户反悔。插件新增 pre-execute 能力探测 `ctx.get("approval")` → `overrideOf(session) ?? config.policy`；命中 `never` 时返回三段式 deny（人工 CLI / 手动推送 / 切换预设），不再制造"提示调 A、A 必失败"的死循环。post-execute **重探测策略**后对 gated 工具被拒补一行归因标记（区分"审批禁用"与"可能真被用户拒绝"两种措辞，并按工具给对应降级路径）。
+- **文案补降级路径（高）**：受保护分支 push（显式/隐式/包装三条）的"下一步"用**简版**人工提示（避免每次重复 ~300 字符条件句）；`authorize-main` 词法 deny、gated 工具的 deny/marker、工具描述内嵌**由模块位置解析出的绝对 CLI 路径**（profile 安装也单轮可执行）与"目标仓库 cwd + 终端随机确认码"细节；CLI 非 TTY 报错同步。
+- **authorize 动词误伤修复（中，已按对抗审查返工）**：第一版把规则收窄为"调用位置"，对抗审查证明这是安全回退——程序化新建控制台（`Start-Process`/`conhost`/python `CREATE_NEW_CONSOLE`）会让子进程拿到真 TTY 并写授权，而旧规则对字面动词全覆盖。最终实现：**字面动词在原始与归一化视图中都 fail-closed**（拼接/包装一网打尽），唯一例外是**纯只读检查链**（`Select-String`/`grep`/`Get-Content`/`git log…` 经 `;`/`|`/换行串联，且不含脚本块、命令替换、文件重定向（`2>&1` 除外）、`Write-Host`/`echo` 写入型命令、`rg --pre`/`git grep -O…`/`--output` 等内联执行 flag）。同时把 CLI 从"仅查 isTTY"升级为**键入本次随机确认码 + 60s 超时**（未确认/错误码/EOF/流错误一律不落授权）。
+- **审计外溢修复（中，round-13 对抗审查发现）**：① 状态区词法洞——`cd .git/worktree-guard` + 相对 `Set-Content state.json` 曾可伪造授权，已把目录匹配的**尾部分隔符改为可选**并加回归（分段 `cd .git` 再 `cd worktree-guard` 仍未拦，属 §14.3 边界）；② sidecar `protected_branches` 曾可被配置**移除** master/main 从而关掉 push 网——改为**只增不减**（P1），且模型的 `write`/`edit` 对 `.dsh/worktree-guard.json` 一律 deny（shell 直写属 §14 词法边界）；③ `revoke` 收敛进同一 [src/core/authorize.js](src/core/authorize.js) grant/revoke 路径；④ 插件 Config 自定义 `protectedBranches` 不再丢默认 master/main（P1 union 在首次 context 构建前完成）。
+- **作用域与等级文档化（中）**：CLI 授权写入 `<git-common-dir>/worktree-guard/state.json`，**仓库级 TTL**、对本仓库全部会话/关联 worktree 生效（实测两个不同 session 均 allow）；README 新增"授权与人闸"章节与 P6 "运行期挑战"等级（明确非结构/非身份边界，可被控制终端的自动化重放）；`≤0.2.1` 无确认码一事写明。
+- **架构收敛（低）**：主分支 grant/revoke 收敛为 [src/core/authorize.js](src/core/authorize.js) 唯一路径（TTL 钳制 + state + 审计一处），ask 门工具与 CLI 共用；人证以 `confirm` 回调注入（工具=上游 ask 已确认，CLI=键入随机码），"未确认绝不落授权"可单测而不依赖控制台。CLI 人证与路径解析独立为 [src/core/human-gate.js](src/core/human-gate.js) / [src/core/cli-path.js](src/core/cli-path.js)。
+- **测试**：新增 [test/round13-regressions.test.js](test/round13-regressions.test.js)（26 项：误报防线 / 启动器·多行·拼接仍拦 / 策略探测与装配 wiring（含"非 gated 不探测"spy）/ post-execute 标记措辞 / CLI 键入确认（含错误流 fail-closed）/ 授权 grant+revoke 单路径与 TTL 钳制 / 文案预算契约 / 状态区·sidecar·插件 Config 自授面）；全量 `npm test` → **163/163 pass**。CLI 人证另做**手工**对照观察（非自动化断言）：程序化控制台（`cmd /c start /wait`）中，旧实现仅查 `isTTY` 即落授权；新实现要求键入终端显示的确认码。把"要求码"藏起来仅经 argv 传入属于诊断变体、不是发布 CLI 的路径，连续两次观察无任何输入（`raw=""`）并超时；发布形态下只有读到显示码并键入者才通过——**不构成"环境绝不会注入"的自动化证明**，等级按 P6 记为运行期挑战。
 
 ## 文案对抗审查轮（round-9，三路子代理独立审查后统一实施）
 
@@ -67,7 +79,7 @@
 
 ## CLI 端到端（C 系列，真实临时仓库）
 
-help / create（含 task-brief 与 skill 写入）/ status（unbound→rooted→repo-rooted 模式）/ enter / exit / remove（needConfirm 门、dirty 拒绝、merged-only 分支删除证明流）/ prune（dry-run 与实删）/ authorize-main **非 TTY 结构性拒绝**（exit 1）/ revoke-main / 未知命令 exit 2 / 状态区审计落盘。
+help / create（含 task-brief 与 skill 写入）/ status（unbound→rooted→repo-rooted 模式）/ enter / exit / remove（needConfirm 门、dirty 拒绝、merged-only 分支删除证明流）/ prune（dry-run 与实删）/ authorize-main **非 TTY 拒绝**（exit 1）/ revoke-main / 未知命令 exit 2 / 状态区审计落盘。
 
 ## 发现与处理
 

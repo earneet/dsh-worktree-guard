@@ -1,8 +1,8 @@
 # dsh-worktree-guard 设计文档
 
-> **状态**: v1.1 定稿（M0 宿主契约证据大半完成，见 §4；待实现）
+> **状态**: v1.2（round-13 实测修订；实现已发布于 0.2.x，见 [TEST-REPORT](../TEST-REPORT.md)）
 > **谱系**: `opencode-worktree-isolation`（透明重写、Windows 归一化、[worktree] 通告）× `zcode-worktree-guard`（默认开放、常开安全网、authorize-main、prune、204 用例方法论）× `chuck-ma opencode-worktree-guard`（merge-base 验证、block-with-instruction）→ DSH 原生形态移植与进化
-> **修订史**: v0.1（契约假设待验）→ 宿主契约实测（C1–C7，[design-review.md](design-review.md)）→ v0.2 实现草案（[implementation-draft.md](implementation-draft.md)）→ 四路对抗审查（[design-tenets.md](design-tenets.md)）→ v1.0（重写路线击穿，重心翻转为会话根）→ **v1.1（补读域守卫 + Agent 沟通面 + 不侵入原则，全面梳理）**
+> **修订史**: v0.1（契约假设待验）→ 宿主契约实测（C1–C7，[design-review.md](design-review.md)）→ v0.2 实现草案（[implementation-draft.md](implementation-draft.md)）→ 四路对抗审查（[design-tenets.md](design-tenets.md)）→ v1.0（重写路线击穿，重心翻转为会话根）→ v1.1（补读域守卫 + Agent 沟通面 + 不侵入原则，全面梳理）→ **round-13（issue #1：审批禁用会话的 ask 死路、CLI 人证升级为键入随机确认码、authorize 词法网误报修复；C11 审批策略探测）**
 > **方法论**: 契约证据先行 + 对抗审查定稿。两次关键纠偏均由实证驱动：① 重写路线被宿主源码三连击穿（cordis 服务不可包裹 / glob·grep 旁路 ctx.fs / resolve 无会话身份）；② "读无害"结论从 zcode 移植时丢失前提（zcode 的 read 是被重写回副本的），补读域守卫。
 
 ---
@@ -24,7 +24,7 @@
 - **P3 偏离必可见**：任何偏离模型原话/预期世界的执行效果或结果，必须在返回模型的上下文留痕——涵盖未来的重写通告与现在的读域溯源标记。
 - **P4 人闸必须机械**：授权操作必须经 `ask_user_question` 阻塞式真人确认（TTL 自确认时刻起算、审计记录应答），不接受提示词软约束——显式修复 zcode 已知弱点（其 authorize-main 为 agent 自调自授）。
 - **P5 never-block-owner**：会话对自身绑定的解除与收尾，永不被自己或死会话阻塞。
-- **P6 诚实降级**：每条守卫标注三级——**结构拒绝**（沙箱/会话根/ask 门）/ **词法启发**（pwsh 文本、路径归一化、读域判域）/ **纯纪律**（提示层）。README、deny 消息、文档同词汇。danger-full-access 下的一切 = 纯纪律级。
+- **P6 诚实降级**：每条守卫标注等级——**结构拒绝**（沙箱/会话根/ask 门）/ **运行期挑战**（CLI 一次性确认码：机械校验，非结构边界、非身份认证；能控制该终端并读回显示码的自动化可重放）/ **词法启发**（pwsh 文本、路径归一化、读域判域）/ **纯纪律**（提示层）。README、deny 消息、文档同词汇。danger-full-access 下的一切 = 纯纪律级（含任意脚本内容与直接写状态文件）。
 - **P7 零侵入**：插件不读写用户的 `AGENTS.md`/`CLAUDE.md` 及任何用户文档；一切 Agent 沟通经会话注入通道与工具 schema，会话结束即消失；副本内仅新增 DSH 配置空间自有文件（`.dsh/`），随副本清理消失。
 
 **P6 推论（沟通面即防线）**：结构级正确无需模型配合；**词法级正确的最后一段防线就是 deny/标记消息本身**——消息必须自足、单轮可执行（§7）。
@@ -62,6 +62,7 @@ DSH 的机制事实（全部源码实证，`C:\Users\Administrator\.dsh\profiles
 | 原生插件 throw = fail-closed | ✅ | fail 语义白送 |
 | `agent/disposed`（C8） | ✅ | Event 目录实证（emit，payload `{agent}`）；round-8 落地：disposed 时为本会话绑定盖 `resolved_at`（不删——resume 友好，prune 终删） |
 | 沙箱模式可监听（C9） | ✅ | `ctx.fs.sandboxMode` / `ctx.sandboxPolicy.resolve` 能力探测已实现（R5-2 回归） |
+| 审批策略可探测（C11） | ✅ | `ctx.get("approval")` → `overrideOf(session)` / `config.policy`；策略 `never` 的会话 ask 必被宿主自动拒绝（无弹窗，文案仍是 `the user rejected tool`）——round-13 据此把必败 ask 改为带人工通道指引的 deny（§11）；post-execute 对 gated 工具被拒按重探测策略补标记；主分支授权收敛为 `core/authorize.js` 单一路径（confirm 回调注入），CLI 人证=键入本次随机确认码（§11） |
 | 编程式以指定 cwd 建会话（C10） | ⚠️ 能力面已实证 | Service 目录见 `agentLoop.create(id, options, meta: Pick<SessionHeader,'cwd'>)` 与 `workspaceController.create`；实际调用冒烟仍未做，rooted 引导文案为当前形态 |
 | 宿主多可写根 / 原生 worktree 子系统 | ❌ 不存在 | rooted 是唯一结构路径 |
 
@@ -100,16 +101,19 @@ hooks.json（无 updatedInput、无父会话 id、命令钩子 fail-open）
 dsh-worktree-guard/
   package.json / cordis.patch.yml
   src/
-    index.ts        # apply(ctx, config)：组装 A/A'/C/D
-    guard.ts        # 部件A/A'：pre-execute 安全网 + 读域守卫
-    wt-tools.ts     # 部件C：worktree_* 工具（defineTool）
-    notices.ts      # 部件D：注入与标记
-    core/           # 纯函数库（无 cordis 依赖，可单测）
-      decision.ts   # 决策表（zcode 204 用例方法论冻结）
-      paths.ts      # Windows 归一化（opencode norm() 移植）
-      binding.ts    # 绑定三层解析
-      store.ts      # <git-common-dir>/worktree-guard/ 读写
-      gitops.ts     # merge-base / 分支 / worktree 生命周期
+    index.js        # apply(ctx, config)：组装 A/A'/C/D
+    guard.js        # 部件A/A'：pre-execute 安全网 + 读域守卫 + gated 工具策略探测
+    wt-tools.js     # 部件C：worktree_* 工具（defineTool）
+    notices.js      # 部件D：注入与标记
+    core/           # 无 cordis 依赖库（可单测；含 store/gitops/authorize 等 IO helper）
+      decision.js   # 决策表（zcode 204 用例方法论冻结）
+      authorize.js  # 主分支授权单一路径（TTL 钳制 + 审计 + 确认回调注入）
+      human-gate.js # CLI 键入式人证（TTY ≠ 结构，确认码才是）
+      cli-path.js   # 由模块位置解析 CLI 绝对路径（deny/ask 文案单轮可执行）
+      paths.js      # Windows 归一化（opencode norm() 移植）
+      binding.js    # 绑定三层解析
+      store.js      # <git-common-dir>/worktree-guard/ 读写
+      gitops.js     # merge-base / 分支 / worktree 生命周期
   wt.js            # CLI 包装（同一 core，人/脚本入口）
   test/
 ```
@@ -120,12 +124,12 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 
 | 工具 | 路径字段 | 绑定态行为 | 未绑定行为 | 等级 |
 |---|---|---|---|---|
-| `write`/`edit` | `file_path` | 归一化后落入其他副本（**常开**，未绑定亦拦）/ `.git` / git-common-dir `/worktree-guard/` 状态区 → **deny + 指令**；主根路径 → deny + "以副本为根开会话"（rooted 下通常已被沙箱先拒，此处纵深） | 放行（宿主沙箱语义；跨副本/`.git` 除外） | 词法启发（纵深） |
+| `write`/`edit` | `file_path` | 归一化后落入其他副本（**常开**，未绑定亦拦）/ `.git` / git-common-dir `/worktree-guard/` 状态区 / 主根的 `.dsh/worktree-guard.json` 安全配置 → **deny + 指令**；主根路径 → deny + "以副本为根开会话"（rooted 下通常已被沙箱先拒，此处纵深） | 放行（宿主沙箱语义；跨副本/`.git`/安全配置除外） | 词法启发（纵深） |
 | `read`/`read_image` | `file_path` | **读域守卫（§6.1）**：命中主根 → 默认 warn 放行 + 溯源标记；`read_policy:"strict"` → deny + 指令；其他副本 / `.git` 读放行（排障） | 放行 | 词法启发 |
 | `glob`/`grep` | `path` | 同 read 读域守卫（缺省 path 天然落副本，结构默认） | 放行 | 词法启发 |
 | `pwsh` | `command` | 文本检查：`push`→protected、`branch -D worktree-*`、`git -C <主根>`、主根绝对路径残余 → **deny + 指令** | 同规则常开（安全网部分） | 词法启发 |
 | 后台 job / subagent / workflow | — | 同一 pre-execute 覆盖（C6）；workflow 内联脚本无 fs API（实测）；MCP 写盘不在范围（§14） | — | — |
-| `worktree_authorize_main` / `worktree_allow` | — | **pre-execute 返回 `{kind:"ask"}`**（P4 机械人闸） | 同 | 结构 |
+| `worktree_authorize_main` / `worktree_allow` | — | **pre-execute 返回 `{kind:"ask"}`**（P4 机械人闸）；审批策略 `never` 的会话没有应答者，宿主必自动拒绝 → 直接 **deny + 人工通道指令**（round-13，§11） | 同 | 结构（ask）/ 运行期拒绝（never） |
 
 决策表冻结后每行至少一组测试用例（§15）。
 
@@ -151,8 +155,8 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 | 1 工具描述 | `defineTool` description（进 schema，永远可见） | 静态 | ≤120 词/工具 |
 | 2 常驻状态行 | 常驻段（`dsh-sandbox-policy` 同款） | 每请求 | **1 行** |
 | 3 Session-start inject | `agent/session-start` → `agent.inject` | 会话建立时 | ≤15 行 |
-| 4 deny/ask 消息 | pre-execute reason | 拦截时 | 3 行模板 |
-| 5 post-execute 标记 | additionalContexts（读域溯源 / 未来重写通告） | 事件时 | 1 行 |
+| 4 deny/ask 消息 | pre-execute reason | 拦截时 | **3 行模板**；第 3 行保持简短，授权工具细节放该工具的 deny/post-execute 标记（round-13：push deny 用简版提示，避免每次重复 ~300 字符条件句） |
+| 5 post-execute 标记 | additionalContexts（读域溯源 / 重写通告 / gated 工具被拒归因） | 事件时 | 1 行 |
 
 ### 文案契约（冻结为实现验收标准）
 
@@ -239,8 +243,8 @@ M2: remove {path, confirm_remove, delete_branch}
 ```
 
 - 绑定只来自本会话 enter；state.json 不锁新会话。
-- **审计**：`audit.jsonl`（含绝对路径，分享前手工脱敏）为主副本；会话侧的持久留痕依赖宿主记录 pre-execute deny 的 reason（消息文本进入会话转录）——不假设额外宿主 API（诚实边界：jsonl 在 danger-full-access 下可被绕过词法网者篡改，属 §14.3 已声明边界）。
-- 状态区整体 deny 模型写入（write 工具 + shell 词法网双面，仅 wt 工具进程外写）——防自授/防篡改。
+- **审计**：`audit.jsonl`（含绝对路径，分享前手工脱敏）为主副本；会话侧的持久留痕依赖宿主记录 pre-execute deny 的 reason（消息文本进入会话转录）——不假设额外宿主 API（诚实边界：jsonl 在 danger-full-access 下可被绕过词法网者篡改，属 §14.3 已声明边界）。round-13 起 deny/ask 文案会内嵌**本机插件 CLI 的绝对路径**（否则 profile 安装的用户拿不到可执行命令）；会话转录分享前同样脱敏。
+- 状态区整体 deny 模型写入（write 工具 + shell 词法网双面，仅 wt 工具进程外写）——防自授/防篡改；仓库级**安全配置**（`.dsh/worktree-guard.json`）同样 deny 模型写入，由用户直接编辑（round-13）。
 
 ## 10. 子代理继承
 
@@ -248,9 +252,9 @@ M2: remove {path, confirm_remove, delete_branch}
 
 ## 11. 安全模型
 
-- **硬规则为代码常量**：`.git`/git-common-dir 写、跨副本写、push protected、删 worktree 分支、状态区写——优先于一切配置与白名单。
+- **硬规则为代码常量**：`.git`/git-common-dir 写、跨副本写、删 worktree 分支、状态区写、安全配置写——不因配置/白名单放宽；push 受保护分支的**集合**可由 `protected_branches` 配置**只增不减**（默认 master/main 始终在内，P1：push 是网络操作，删除保护等于关掉唯一防线）。
 - **fail 策略**：原生插件 throw 即 fail-closed（宿主白送）；只读路径判断自身 catch 后放行（fail-open）；全局开关回退全 fail-open。不提供 hooks.json 形态（命令钩子 fail-open 语义混杂）。
-- **人闸**：authorize/allow 一律 `ask_user_question`（P4）；CLI `authorize-main` 仅接受交互式 TTY（模型 shell 非 TTY，结构级封堵词法混淆绕过）。
+- **人闸**：authorize/allow 默认走 `ask_user_question`（P4）。**审批策略 `never` 的会话没有应答者**：宿主在弹出确认框之前就把 ask 判为拒绝（模型看到 `the user rejected tool`，非用户反悔）。round-13 起 pre-execute 探测 `approval.overrideOf(session) ?? config.policy`，命中 `never` 直接 deny 并给出人工通道（用户手动 push/合并、用户终端运行插件 CLI、切换会弹确认的预设），post-execute 按重探测的策略对仍被拒的 gated 工具补一行归因标记；CLI 授权是**仓库级 TTL**（`state.json`，全部会话/关联 worktree 生效），README 明示。**CLI 的 TTY 检查是启发而非边界**：程序化新建控制台（`Start-Process`/`conhost`/python `CREATE_NEW_CONSOLE`）同样 `isTTY=true`，因此 `authorize-main` 要求**键入本次显示的随机确认码**（60s 超时、未确认不落授权）。**等级诚实（P6）**：这是"运行期挑战-应答"，只证明有实体在该终端读码并键入；能读取控制台缓冲并注入输入的程序可重放——那已属任意代码执行（§14.3），而非本门能防的层级。结构级人闸仍只有宿主 ask 门；词法网对字面动词保持 fail-closed（仅纯只读检查链放行，见 §14.1）。
 - **沙箱联动**（C9，防御式实现）：宿主暴露 `ctx.fs.sandboxMode` / `ctx.sandboxPolicy.resolve` 时，绑定态 + danger-full-access → deny + 告警（worktree_* 生命周期工具豁免——P5 逃生口不可自堵）；能力缺失则无操作（P1 不假设宿主形态）。
 - **allowlist 防注入**：`.git`、裸根、`*` 拒绝；路径校验。
 
@@ -262,22 +266,23 @@ M2: remove {path, confirm_remove, delete_branch}
 
 ## 13. 配置
 
-`<repo>/.dsh/worktree-guard.json`（sidecar，P7：DSH 配置空间）。**以主 checkout 根为基准解析**（rooted 会话的 cwd 是副本，其 `.dsh` 无 sidecar）；snake_case 与 camelCase 键均接受。已实现字段：`branch_prefix` / `worktree_parent` / `protected_branches`（默认 master,main）/ `read_policy`（warn|strict）/ `main_write_whitelist`（glob，仓库相对，经 P1 检查后放行主根写）/ `sync.copy_files` + `sync.symlink_dirs` / `allowlist_ttl_minutes` / `authorize_ttl_minutes`。~~`strict_git_ops`~~ 已移除：安全网常开是 P1 语义，提供开关等于允许放宽。插件级配置走 cordis Config（schemastery），sidecar 优先于插件默认。
+`<repo>/.dsh/worktree-guard.json`（sidecar，P7：DSH 配置空间）。**以主 checkout 根为基准解析**（rooted 会话的 cwd 是副本，其 `.dsh` 无 sidecar）；snake_case 与 camelCase 键均接受。已实现字段：`branch_prefix` / `worktree_parent` / `protected_branches`（默认 master,main；**只增不减**，P1）/ `read_policy`（warn|strict）/ `main_write_whitelist`（glob，仓库相对，经 P1 检查后放行主根写）/ `sync.copy_files` + `sync.symlink_dirs` / `allowlist_ttl_minutes` / `authorize_ttl_minutes`（tool 与 CLI 都作为默认 TTL 读取）。~~`strict_git_ops`~~ 已移除：安全网常开是 P1 语义，提供开关等于允许放宽。**该文件由用户维护**：模型的 `write`/`edit` 对它一律 deny（shell 直写仍属 §14 词法边界；`protected_branches` 本身只增不减，改配置无法关掉 push 网/白名单自授）；需要放行时走 `worktree_allow` / `worktree_authorize_main` 人工门。插件级配置走 cordis Config（schemastery）。`protected_branches` 只增不减；其余键（`read_policy`/`branch_prefix`/TTL/同步等）仍为 sidecar（用户）优先于插件默认。
 
 ## 14. 已知边界（P6 分级词汇，写进 README）
 
-1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag/诱饵变体、push 远程删除、**shell 相对路径写守卫状态区**（`Set-Content ../../.git/worktree-guard/...`、guard 模块 import、authorize 动词）已拦（对抗审查 R1–R3 修复）；**嵌套执行器（`cmd /c`、`pwsh -Command`、`iex`）、引号/反引号拼接（`git pus""h`）、子表达式 `$()`、多行脚本、`git config alias`+别名调用经 round-8 归一化 seam 拦截**（`alias` 残余与 env 变量同类，仍属词法边界）；rooted 下 shell 沙箱兜底（写主根=物理拒绝；注意 **push 是网络操作，无沙箱兜底，词法网是唯一防线**），repo-rooted 接不住（故后置）。
+1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag/诱饵变体、push 远程删除、**shell 相对路径写守卫状态区**（`Set-Content ../../.git/worktree-guard/...`、裸目录 `cd .git/worktree-guard` + 相对写、guard 模块 import、authorize 动词）已拦（对抗审查 R1–R3 + round-13 修复）；**嵌套执行器（`cmd /c`、`pwsh -Command`、`iex`）、引号/反引号拼接（`git pus""h`）、子表达式 `$()`、多行脚本、`git config alias`+别名调用经 round-8 归一化 seam 拦截**（`alias` 残余与 env 变量同类，仍属词法边界）；**authorize 字面动词默认整条命令 fail-closed**（raw + 归一化视图都查），唯一例外是**纯只读检查链**（`Select-String`/`grep`/`Get-Content`/`git log…` 等只读段经 `;`/`|`/换行串联，且不含脚本块、命令替换、文件重定向（`2>&1` fd 复制除外）、`Write-Host`/`echo` 等写入型命令、`rg --pre`/`git grep -O…`/`--output` 等内联执行 flag）——round-13 修复"纯读取命令被自授规则误伤"；提交信息/混合命令/变量拼接/别名调用仍拦或属边界（**分段 `cd .git` 再 `cd worktree-guard` 未被拦截，属 §14.3 边界**）；rooted 下 shell 沙箱兜底（写主根=物理拒绝；注意 **push 是网络操作，无沙箱兜底，词法网是唯一防线**），repo-rooted 接不住（故后置）。
 2. 读域守卫同属**词法启发**：junction/8.3 别名可绕过判域；strict 误判代价是多余 deny + 重试，不是错误放行——方向安全。
-3. danger-full-access 下的一切守卫 = **纯纪律级**。
+3. danger-full-access 下的一切守卫 = **纯纪律级**：任意脚本内容不受检、可直接写状态文件/配置（故 sidecar 写被词法网拦，但脚本内容仍属此边界）。
 4. MCP 工具/第三方进程写盘不在范围——靠纪律 + 会话根对冲。
 5. 部署若挂 `dsh-pwsh-local`（无沙箱执行器）则 shell 无围栏——不假设执行器形态，README 明示。
 6. 审计 jsonl 同区可篡改（session 日志双写缓解）。
 7. C8/C9/C10 失败的降级路径见 §3——均不改变形态。
+8. **CLI 确认码是运行期挑战，非身份/结构边界**：能创建/控制真实 pty 并读取控制台缓冲、注入键盘输入的程序可以重放展示码（与 §14.3 的任意代码执行同级）；结构级人闸仍只有宿主 ask 门。
 
 ## 15. 测试策略
 
 - **决策表驱动**：§6 表逐行用例 + 字段形态 + 绑定三层解析 + 白名单/人闸/授权/读域 warn·strict 全交叉（zcode A–R 组方法论，目标 ≥200 用例）。
-- **沟通面契约测试**（§7）：deny 三段式齐备（前缀/原因/单轮可执行下一步）；常驻行恒 1 行；未绑定零注入；工具描述三要素；标记不泄露词法匹配规则。
+- **沟通面契约测试**（§7）：deny 三段式齐备（前缀/原因/单轮可执行下一步）；常驻行恒 1 行；未绑定零注入；工具描述三要素；标记不泄露词法匹配规则；**预算断言**（deny 恒 3 行、标记 1 行、工具描述 ≤120 词——round-13）。
 - **集成**：真实临时 git 仓库全生命周期（create→rooted 会话→读写拦截与标记→人闸→merge-base→cleanup），状态目录 env 隔离。
 - **契约回归冒烟**：§3 全部 ✅/⚠️ 项固化为脚本，DSH 升级一键复验。
 

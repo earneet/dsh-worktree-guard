@@ -33,7 +33,7 @@ test("R4-1 guard-module rule: precise context, no user-file false positives", ()
 });
 
 let repo;
-test("R4-2 CLI authorize-main refuses non-TTY (model shells) structurally", async () => {
+test("R4-2 CLI authorize-main refuses non-TTY (model shells) and writes no grant", async () => {
   const d = await mkdtemp(join(tmpdir(), "wtg-r4-"));
   repo = d;
   const sh = (args) => execFileSync("git", args, { cwd: d, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -41,14 +41,16 @@ test("R4-2 CLI authorize-main refuses non-TTY (model shells) structurally", asyn
   sh(["config", "user.email", "t@t"]); sh(["config", "user.name", "t"]);
   await writeFile(join(d, "a"), "x"); sh(["add", "."]); sh(["commit", "-m", "i", "-q"]);
   const cli = fileURLToPath(new URL("../wt.js", import.meta.url));
-  let failed = false;
+  let err = null;
   try {
     // execFileSync pipes stdout/stderr -> stdin is not a TTY
     execFileSync("node", [cli, "authorize-main", "test", "--ttl-minutes", "240"], { cwd: d, encoding: "utf8" });
-  } catch {
-    failed = true;
+  } catch (e) {
+    err = e;
   }
-  assert.ok(failed, "non-TTY authorize-main must exit non-zero");
+  assert.ok(err, "non-TTY authorize-main must exit non-zero");
+  assert.equal(err.status, 1, "expected an explicit exit 1 (not a crash)");
+  assert.match(String(err.stderr ?? ""), /人工通道/, "user-facing refusal message expected");
   const { readState } = await import("../src/core/store.js");
   const { commonDir } = await import("../src/core/gitops.js");
   const st = await readState(await commonDir(d));

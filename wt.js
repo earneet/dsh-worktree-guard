@@ -5,10 +5,11 @@
 import { parseArgs } from "node:util";
 import { cwd as processCwd } from "node:process";
 import * as lifecycle from "./src/core/lifecycle.js";
-import { commonDir } from "./src/core/gitops.js";
+import { commonDir, listWorktrees } from "./src/core/gitops.js";
 import { loadSidecar as repoConfig } from "./src/core/sidecar.js";
-import { updateState, appendAudit } from "./src/core/store.js";
-import { AUTHORIZE_TTL_CAP_MIN } from "./src/core/constants.js";
+import { authorizeMain, revokeMain, clampAuthorizeTtl } from "./src/core/authorize.js";
+import { confirmTyped } from "./src/core/human-gate.js";
+import { randomBytes } from "node:crypto";
 
 const HELP = `wt — dsh-worktree-guard CLI（与 worktree_* 工具同一 core）
 
@@ -19,7 +20,7 @@ const HELP = `wt — dsh-worktree-guard CLI（与 worktree_* 工具同一 core�
   wt remove <path> [--confirm-remove] [--delete-branch] [--force]
   wt status [--session <id>]
   wt prune [--dry-run]
-  wt authorize-main <reason> [--ttl-minutes <n>]     # 人工通道：不经 ask 门，操作者即人
+  wt authorize-main <reason> [--ttl-minutes <n>]     # 人工通道：交互式终端 + 键入随机确认码
   wt revoke-main
 `;
 
@@ -79,32 +80,46 @@ async function main() {
       return 0;
     }
     case "authorize-main": {
-      // P4 structural gate: the CLI human channel only accepts INTERACTIVE
-      // terminals — model shells are non-TTY, closing the obfuscation bypasses
-      // of the lexical verb net (variable concat, quote insertion).
-      if (!process.stdin.isTTY) {
-        console.error("authorize-main 是人工通道：仅接受交互式终端调用。模型侧请使用 worktree_authorize_main 工具（需用户确认）。");
+      // P4 human channel. TTY alone is NOT structural: a model can launch this
+      // process in a programmatically created console (Start-Process/conhost/
+      // python CREATE_NEW_CONSOLE) whose stdin reports isTTY=true with no human
+      // present. The proof of a human is a TYPED confirmation — a launched
+      // child has nobody to type and times out without writing any grant.
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        console.error("authorize-main 是人工通道：仅接受交互式终端调用。模型侧请使用 worktree_authorize_main 工具（需用户确认）；若本会话审批提示被禁用（approval=never），该工具也会被宿主自动拒绝——请用户亲自在交互式终端运行本命令，或手动推送/合并。");
         return 1;
       }
       const cd = await commonDir(cwd);
-      const ttl = Math.max(1, Math.min(Number(values["ttl-minutes"]) || 15, AUTHORIZE_TTL_CAP_MIN));
-      const st = await updateState(cd, {
-        allow_main_writes: {
-          allow_main_writes: true,
-          allow_reason: positionals.join(" ") || "cli",
-          allow_at: new Date().toISOString(),
-          allow_expires_at: new Date(Date.now() + ttl * 60_000).toISOString(),
-          allow_by: "cli-human",
-        },
+      const reason = positionals.join(" ") || "cli";
+      // Per-invocation nonce, not a fixed "YES": a launched console can receive
+      // ambient input (stray keystrokes / an auto-answerer), and a fixed phrase
+      // is guessable. The code is displayed only on THIS terminal.
+      const nonce = randomBytes(3).toString("hex").toUpperCase();
+      // sidecar authorize_ttl_minutes is a documented config field (§13) and is
+      // resolved against the MAIN checkout root, like every other consumer (a
+      // CLI invoked from a subdir must not silently miss it).
+      const { mainRoot } = await listWorktrees(cwd).catch(() => ({ mainRoot: null }));
+      const sidecar = mainRoot ? await repoConfig(mainRoot) : config;
+      const ttlRequest = values["ttl-minutes"] || sidecar.authorizeTtlMinutes;
+      const ttl = clampAuthorizeTtl(ttlRequest);
+      console.log(`即将授权写主分支/推送受保护分支：${ttl} 分钟（仓库级 TTL，对本仓库所有会话生效）。`);
+      console.log(`原因：${reason}`);
+      const r = await authorizeMain({
+        commonDir: cd,
+        reason,
+        ttlMinutes: ttlRequest,
+        by: "cli-human",
+        confirm: () => confirmTyped({ phrase: nonce, timeoutMs: 60_000 }),
       });
-      await appendAudit(cd, { type: "authorize_main", by: "cli-human", ttl_minutes: ttl });
-      console.log(`已授权，${st.allow_main_writes.allow_expires_at} 失效`);
+      if (!r.authorized) {
+        console.error("未确认，已取消（未写入任何授权）。");
+        return 1;
+      }
+      console.log(`已授权（${r.ttlMinutes} 分钟），${r.expiresAt} 失效`);
       return 0;
     }
     case "revoke-main": {
-      const cd = await commonDir(cwd);
-      await updateState(cd, { allow_main_writes: {} });
-      await appendAudit(cd, { type: "revoke_main", by: "cli-human" });
+      await revokeMain({ commonDir: await commonDir(cwd), by: "cli-human" });
       console.log("已收回授权");
       return 0;
     }

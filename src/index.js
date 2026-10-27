@@ -9,7 +9,7 @@
 // Config MUST be a schemastery Schema — cordis resolveConfig calls .validate on
 // it; a plain object fails plugin activation (found via real dsh install).
 import z from "@deepseek-ai/schemastery";
-import { decideToolCall, takePendingMark } from "./guard.js";
+import { decideToolCall, takePendingMark, gateRejectionMark, isGatedTool } from "./guard.js";
 import { toolSpecs } from "./wt-tools.js";
 import { standingLine, sessionStartText } from "./notices.js";
 import { resolveBinding } from "./core/binding.js";
@@ -40,6 +40,25 @@ function boundedSet(cap) {
 export function apply(ctx, config) {
   if (config.enable === false) return;
 
+  // Ask-gate capability probe (C11): the approval service exposes the session's
+  // effective policy (last logged approval/policy, else config default).
+  // policy "never" means an ask can never be answered, so the guard denies with
+  // the human-channel fallback instead (round-13 live finding). Missing service
+  // / throw / non-string => undefined => the host owns ask semantics.
+  const effectiveApprovalPolicy = async (session) => {
+    try {
+      if (typeof ctx.get !== "function" && !ctx.approval) return undefined;
+      const approval = (typeof ctx.get === "function" ? ctx.get("approval") : undefined) ?? ctx.approval;
+      if (!approval) return undefined;
+      // overrideOf is sync in current hosts; tolerate an async seam too.
+      const override = typeof approval.overrideOf === "function" ? await Promise.resolve(approval.overrideOf(session)) : undefined;
+      const policy = override ?? approval.config?.policy ?? "ask";
+      return typeof policy === "string" ? policy : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   // ---- component A/A': safety net + read-domain guard (deny/ask only) ----
   ctx.on("tools/pre-execute", async (exec, next) => {
     const decision = await decideToolCall(exec, {
@@ -58,18 +77,28 @@ export function apply(ctx, config) {
         }
         return undefined;
       },
+      approvalPolicyOf: effectiveApprovalPolicy,
     });
     if (decision.kind === "deny") return { kind: "deny", reason: decision.reason };
     if (decision.kind === "ask") return { kind: "ask", reason: decision.reason };
     return next({ kind: "allow" }); // markers travel via pendingMarks (P3 pipeline)
   });
 
-  // ---- component D: markers via post-execute (read origin; P3) ----
+  // ---- component D: markers via post-execute (read origin / gate rejection; P3) ----
   ctx.on("tools/post-execute", async (exec, result, next) => {
     const mark = takePendingMark(exec?.callId);
+    // Host refusals of gated tools run post-execute with isError:true; a
+    // policy-"never" rejection is indistinguishable from a real decline in the
+    // error text, so re-probe the policy and leave the one-line advisory
+    // (round-13, P3). Probe only for the two gated names: overrideOf walks the
+    // session log, and post-execute runs for EVERY tool call.
+    const gateMark = isGatedTool(exec?.name)
+      ? gateRejectionMark(exec, result, await effectiveApprovalPolicy(exec?.agent?.session))
+      : null;
     const out = await next();
-    if (mark && out && typeof out === "object") {
-      return { ...out, additionalContexts: [...(out.additionalContexts ?? []), mark] };
+    const extra = [mark, gateMark].filter(Boolean);
+    if (extra.length && out && typeof out === "object") {
+      return { ...out, additionalContexts: [...(out.additionalContexts ?? []), ...extra] };
     }
     return out;
   });

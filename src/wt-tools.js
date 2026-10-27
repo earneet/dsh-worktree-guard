@@ -7,11 +7,13 @@
 import * as lifecycle from "./core/lifecycle.js";
 import { commonDir, listWorktrees } from "./core/gitops.js";
 import { bustGuardContextCache } from "./guard.js";
-import { updateState, appendAudit, addAllowEntry, clearAllowlist, readAllowlist } from "./core/store.js";
+import { appendAudit, addAllowEntry, clearAllowlist, readAllowlist } from "./core/store.js";
+import { authorizeMain, revokeMain } from "./core/authorize.js";
 import { loadSidecar } from "./core/sidecar.js";
-import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, AUTHORIZE_TTL_CAP_MIN, ALLOW_TTL_CAP_MIN } from "./core/constants.js";
+import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, ALLOW_TTL_CAP_MIN } from "./core/constants.js";
 import { resolve as resolvePath } from "node:path";
 import { norm } from "./core/paths.js";
+import { CLI_PATH } from "./core/cli-path.js";
 
 const blocks = (text) => [{ type: "text", text }];
 
@@ -56,9 +58,9 @@ const exitDesc = `Unbind the current session from its worktree. action:"keep" ke
 
 const statusDesc = `Worktree inventory and binding overview — the FIRST thing to call after being blocked by worktree-guard, or before finishing a task. Reports mode (rooted / repo-rooted / unbound), per-copy merged-into-HEAD proof, dirty state, stale bindings, and cleanup steps. unbound = a normal session with no copy bound: nothing to do here.`;
 
-const authorizeDesc = `Authorize writes/merge to the protected main branch for a short TTL (default 15 minutes). REQUIRES the user to confirm interactively — the model CANNOT pass this gate by itself; call it ONLY after the user explicitly agreed. Each call re-prompts the user. Provide a clear reason.`;
+const authorizeDesc = `Authorize writes/merge to the protected main branch for a short TTL (default 15 minutes). REQUIRES the user to confirm interactively — the model CANNOT pass this gate by itself; call it ONLY after the user explicitly agreed and provide a clear reason. Each call re-prompts the user. If the host returns "the user rejected tool" while the user did NOT decline, the session's approval prompts are disabled (policy never): do NOT retry — tell the user to push/merge manually, to run node "${CLI_PATH}" authorize-main "<reason>" inside the target repo in their own interactive terminal (they must type the displayed confirmation code; repo-wide TTL), or to switch to a permission preset that prompts.`;
 
-const allowDesc = `Temporarily allow ONE path pattern past the guard (TTL, default 60 minutes). REQUIRES interactive user confirmation — the model cannot pass this gate alone. Dangerous patterns (.git, bare root, *) are rejected.`;
+const allowDesc = `Temporarily allow ONE path pattern past the guard (TTL, default 60 minutes). REQUIRES interactive user confirmation — the model cannot pass this gate alone. Dangerous patterns (.git, bare root, *) are rejected. If the host returns "the user rejected tool" without showing the user a prompt, the approval channel is disabled (policy never): do NOT retry — ask the user to switch to a prompting preset, or to add the path to main_write_whitelist in the target repo's .dsh/worktree-guard.json themselves.`;
 
 const removeDesc = `Remove a worktree copy (exit-first). Deletes its branch only when merged into base (proof via git merge-base). confirm_remove:true is required; pass delete_branch to also drop the merged branch.`;
 
@@ -261,18 +263,16 @@ export function toolSpecs(helpers) {
         const cd = await commonDir(s.cwd);
         const { mainRoot } = await listWorktrees(s.cwd);
         const sidecar = await loadSidecar(mainRoot);
-        const ttl = Math.max(1, Math.min(Number(args.ttl_minutes) || sidecar.authorizeTtlMinutes || DEFAULT_AUTHORIZE_TTL_MIN, AUTHORIZE_TTL_CAP_MIN));
-        const st = await updateState(cd, {
-          allow_main_writes: {
-            allow_main_writes: true,
-            allow_reason: args.reason ?? "",
-            allow_at: new Date().toISOString(),
-            allow_expires_at: new Date(Date.now() + ttl * 60_000).toISOString(),
-            allow_by: "user-ask-gate",
-          },
+        const r = await authorizeMain({
+          commonDir: cd,
+          reason: args.reason ?? "",
+          ttlMinutes: Number(args.ttl_minutes) || sidecar.authorizeTtlMinutes,
+          by: "user-ask-gate",
+          session: s.id,
+          confirm: async () => true, // ask gate confirmed upstream (P4)
         });
-        await appendAudit(cd, { type: "authorize_main", session: s.id, reason: args.reason, ttl_minutes: ttl });
-        return { authorized: true, expiresAt: st.allow_main_writes.allow_expires_at };
+        if (!r.authorized) throw new Error("authorization was not confirmed"); // defensive: cannot happen with a true confirm
+        return { authorized: true, expiresAt: r.expiresAt };
       },
     },
     {
@@ -285,9 +285,7 @@ export function toolSpecs(helpers) {
       },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
-        const cd = await commonDir(s.cwd);
-        await updateState(cd, { allow_main_writes: {} });
-        await appendAudit(cd, { type: "revoke_main", session: s.id });
+        await revokeMain({ commonDir: await commonDir(s.cwd), by: "worktree-tool", session: s.id });
         return { revoked: true };
       },
     },

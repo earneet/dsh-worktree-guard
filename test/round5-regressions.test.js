@@ -49,13 +49,15 @@ test("R5-1b sidecar read_policy reaches the guard (strict via sidecar)", async (
   await rm(join(repo, ".dsh", "worktree-guard.json"), { force: true });
 });
 
-test("R5-1c sidecar protected_branches reaches the net", async () => {
+test("R5-1c sidecar protected_branches ADDS to the net (monotonic, P1)", async () => {
   await mkdir(join(repo, ".dsh"), { recursive: true });
   await writeFile(join(repo, ".dsh", "worktree-guard.json"), JSON.stringify({ protected_branches: ["trunk"] }), "utf8");
   const denyCase = await decideToolCall(mkExec({ tool: "pwsh", args: { command: "git push origin trunk" }, cwd: wt }), {});
   assert.equal(denyCase.kind, "deny", "sidecar-declared protected branch must be netted");
-  const okCase = await decideToolCall(mkExec({ tool: "pwsh", args: { command: "git push origin main" }, cwd: wt }), {});
-  assert.equal(okCase.kind, "allow", "default main is no longer protected when sidecar overrides");
+  // round-13: config may ADD but never REMOVE protection (push is the only layer
+  // for a network operation; a model-writable removal would be self-authorization)
+  const defaultCase = await decideToolCall(mkExec({ tool: "pwsh", args: { command: "git push origin main" }, cwd: wt }), {});
+  assert.equal(defaultCase.kind, "deny", "default main stays protected when sidecar adds a branch");
   await rm(join(repo, ".dsh", "worktree-guard.json"), { force: true });
 });
 

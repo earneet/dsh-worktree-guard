@@ -261,7 +261,8 @@ test("P4 post-execute: 读主 checkout 后标记附加到 additionalContexts", a
   const exec = { name: "read", arguments: { file_path: join(repo, "a.txt") }, callId: "p4", agent: { session: { header: { id: "e1", cwd: wt } } } };
   await ctx.fire("tools/pre-execute", exec);
   const out = await ctx.fire("tools/post-execute", exec, { content: [] }, async () => ({ content: [] }));
-  assert.ok(out.additionalContexts?.some((c) => String(c.text ?? c).includes("主 checkout")));
+  const text = (m) => m?.content?.[0]?.text ?? String(m);
+  assert.ok(out.additionalContexts?.some((c) => text(c).includes("主 checkout")));
 });
 
 test("P5 agent/pre-step: 绑定会话注入 standing line 且仅一次", async () => {

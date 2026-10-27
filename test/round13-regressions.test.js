@@ -23,6 +23,8 @@ import { apply } from "../src/index.js";
 import { toolSpecs } from "../src/wt-tools.js";
 import { MAIN, WT_A, COMMON } from "./helpers/fixtures.js";
 
+const contextText = (m) => m?.content?.[0]?.text ?? String(m);
+
 const ctx = makeContext({ mainRoot: MAIN, commonDir: COMMON, worktrees: [{ root: WT_A, name: "worktree-alpha" }] });
 const bound = { worktree: WT_A, branch: "worktree-alpha" };
 const pw = (command, binding = null, auth = {}) => decidePwsh({ command, currentBranchName: "main" }, ctx, binding, auth);
@@ -255,13 +257,17 @@ test("R13-C4 post-execute: rejection advisory follows the re-probed policy and t
   const exec = execOf("worktree_authorize_main");
   const out = await neverCtx.fire("tools/post-execute", exec, failure, async () => ({ kind: "accept" }));
   const extra = out.additionalContexts ?? [];
-  assert.ok(extra.some((m) => /approval=never/.test(String(m)) && /确认码/.test(String(m))), "never marker expected");
+  assert.ok(extra.some((m) => /approval=never/.test(contextText(m)) && /确认码/.test(contextText(m))), "never marker expected");
+  // host contract: additionalContexts is UserMessage[], not bare strings
+  assert.equal(extra.at(-1)?.role, "user");
+  assert.equal(extra.at(-1)?.source?.kind, "user");
+  assert.equal(typeof extra.at(-1)?.id, "string");
 
   // policy ask/unknown: neutral wording, no false "approval prompts disabled" claim
   const askCtx = mockCtx({ approval: { overrideOf: () => "ask", config: { policy: "ask" } } });
   apply(askCtx, {});
   const out2 = await askCtx.fire("tools/post-execute", execOf("worktree_authorize_main"), failure, async () => ({ kind: "accept" }));
-  const mark2 = String((out2.additionalContexts ?? []).at(-1));
+  const mark2 = contextText((out2.additionalContexts ?? []).at(-1));
   assert.doesNotMatch(mark2, /approval=never/);
   assert.match(mark2, /未必|可能/);
 

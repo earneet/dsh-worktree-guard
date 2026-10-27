@@ -156,7 +156,7 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 | 2 常驻状态行 | 常驻段（`dsh-sandbox-policy` 同款） | 每请求 | **1 行** |
 | 3 Session-start inject | `agent/session-start` → `agent.inject` | 会话建立时 | ≤15 行 |
 | 4 deny/ask 消息 | pre-execute reason | 拦截时 | **3 行模板**；第 3 行保持简短，授权工具细节放该工具的 deny/post-execute 标记（round-13：push deny 用简版提示，避免每次重复 ~300 字符条件句） |
-| 5 post-execute 标记 | additionalContexts（读域溯源 / 重写通告 / gated 工具被拒归因） | 事件时 | 1 行 |
+| 5 post-execute 标记 | additionalContexts（读域溯源 / 重写通告 / gated 工具被拒归因） | 事件时 | 1 行；**元素必须是 `UserMessage`**（`id`/`role`/`content`/`source`），不是字符串——round-13 live smoke：字符串会让 agent loop 在后续步骤读 `.source.kind` 崩溃；统一经 `contextMessage()` 构造 |
 
 ### 文案契约（冻结为实现验收标准）
 

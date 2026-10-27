@@ -9,6 +9,7 @@
 // Config MUST be a schemastery Schema — cordis resolveConfig calls .validate on
 // it; a plain object fails plugin activation (found via real dsh install).
 import z from "@deepseek-ai/schemastery";
+import { randomUUID } from "node:crypto";
 import { decideToolCall, takePendingMark, gateRejectionMark, isGatedTool } from "./guard.js";
 import { toolSpecs } from "./wt-tools.js";
 import { standingLine, sessionStartText } from "./notices.js";
@@ -16,6 +17,22 @@ import { resolveBinding } from "./core/binding.js";
 
 export const name = "worktree-guard";
 export const inject = ["tools"];
+
+/**
+ * `tools/post-execute` `additionalContexts` is `UserMessage[]` in the host
+ * contract (verified in 0.1.5 and 0.2.1: MessageBase requires id/content/source;
+ * a bare string makes the loop read `.source.kind` of undefined — the round-13
+ * live smoke caught `Cannot read properties of undefined (reading 'kind')`).
+ * Build a plain, version-tolerant user-role message.
+ */
+function contextMessage(text) {
+  return {
+    id: randomUUID(),
+    role: "user",
+    content: [{ type: "text", text: String(text) }],
+    source: { kind: "user" },
+  };
+}
 
 export const Config = z.object({
   enable: z.boolean().default(true),
@@ -95,12 +112,18 @@ export function apply(ctx, config) {
     const gateMark = isGatedTool(exec?.name)
       ? gateRejectionMark(exec, result, await effectiveApprovalPolicy(exec?.agent?.session))
       : null;
-    const out = await next();
-    const extra = [mark, gateMark].filter(Boolean);
-    if (extra.length && out && typeof out === "object") {
-      return { ...out, additionalContexts: [...(out.additionalContexts ?? []), ...extra] };
+    // Older host lines may resolve `next()` to undefined (and may omit `next`
+    // entirely); the host then reads `.kind` off our return — live smoke caught
+    // `Cannot read properties of undefined (reading 'kind')` on the ask-rejection
+    // path. Normalize to the documented `{kind:"accept"}` shape; a real `next()`
+    // throw still propagates (post-execute failure is not ours to swallow).
+    const out = typeof next === "function" ? await next() : undefined;
+    const base = out && typeof out === "object" ? out : { kind: "accept" };
+    const extra = [mark, gateMark].filter(Boolean).map(contextMessage);
+    if (extra.length) {
+      return { ...base, additionalContexts: [...(base.additionalContexts ?? []), ...extra] };
     }
-    return out;
+    return base;
   });
 
   // ---- component D channel 2: standing status line — injected ONCE per bound

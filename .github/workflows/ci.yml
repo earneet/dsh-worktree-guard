@@ -16,6 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+    # GitHub's Windows runner exposes an 8.3 short temp path (RUNNER~1) by
+    # default; path-identity integration tests need the long runner temp path.
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

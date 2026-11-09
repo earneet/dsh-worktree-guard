@@ -8,14 +8,15 @@
 // fail-open — but a DENY decision already reached is returned regardless of
 // audit failures (audit must never weaken the net; adversarial round-1
 // blocker fix).
-import { decideWrite, decideRead, decidePwsh, makeContext } from "./core/decision.js";
+import { decideWrite, decideRead, decidePwsh, makeContext, extractGitRetargets } from "./core/decision.js";
 import { resolveBinding } from "./core/binding.js";
 import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.js";
-import { norm, physicalAncestorKey, classifyTarget } from "./core/paths.js";
+import { norm, physicalAncestorKey, classifyTarget, extractAbsolutePaths } from "./core/paths.js";
 import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/store.js";
 import { loadSidecar } from "./core/sidecar.js";
 import { GUARD_CTX_TTL_MS, DEFAULT_PROTECTED_BRANCHES } from "./core/constants.js";
 import { manualOrCliHint, humanChannelHint } from "./core/cli-path.js";
+import { access } from "node:fs/promises";
 
 const ctxCache = new Map(); // commonDir -> { at, ctx }
 
@@ -181,6 +182,27 @@ async function sandboxDenied(binding, opts, header) {
 }
 
 /**
+ * Paths referenced by a shell command that do NOT exist (issue #2). The
+ * decision tables stay fs-free; this probe only sharpens deny copy (a missing
+ * copy path is not "the main checkout"), so a stat failure must never change
+ * allow/deny by itself.
+ */
+async function missingPathSet(command, cwd) {
+  if (typeof command !== "string") return new Set();
+  const candidates = new Set(extractAbsolutePaths(command));
+  for (const t of extractGitRetargets(command)) {
+    try { candidates.add(norm(t, cwd)); } catch { /* lexical fallback below */ }
+  }
+  const missing = new Set();
+  for (const p of candidates) {
+    const abs = norm(p);
+    if (!abs) continue;
+    try { await access(abs); } catch { missing.add(abs); }
+  }
+  return missing;
+}
+
+/**
  * Main entry: decide a pre-execute outcome for one tool call.
  * @param {object} exec tool execution ({ name, arguments, callId, agent })
  * @param {object} opts { protectedBranches, readPolicy, branchPrefix, sandboxModeOf }
@@ -303,14 +325,25 @@ export async function decideToolCall(exec, opts = {}) {
     let d;
     try {
       const branchNow = await currentBranch(cwd).catch(() => null);
-      d = decidePwsh({ command: args.command, currentBranchName: branchNow }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
+      // issue #2: existence is probed here (guard), never inside the pure
+      // decision tables, and only feeds deny copy.
+      const missingPaths = await missingPathSet(args.command, cwd).catch(() => new Set());
+      d = decidePwsh({ command: args.command, currentBranchName: branchNow, cwd, missingPaths }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
     } catch (err) {
       // a broken net must not brick the session: fail-open + audit (§11)
       await safeAudit(commonDir, ident.sessionId, "shell_guard_error", String(err), args);
       return { kind: "allow" };
     }
-    if (d.kind === "deny") await safeAudit(commonDir, ident.sessionId, "deny_shell", d.reason, args);
-    return d;
+    if (d.kind === "deny") {
+      await safeAudit(commonDir, ident.sessionId, "deny_shell", d.reason, args);
+      return d;
+    }
+    // 0.2.3 (issue #1): the relaxed protected-push path is audited; the audit
+    // record is the deviation trace (P3), the host still sees a plain allow.
+    if (d.audit) {
+      await safeAudit(commonDir, ident.sessionId, d.audit, "未绑定会话根在主 checkout，推送当前受保护分支", args);
+    }
+    return { kind: "allow" };
   }
   return { kind: "allow" };
 }

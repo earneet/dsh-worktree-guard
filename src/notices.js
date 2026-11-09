@@ -42,7 +42,7 @@ export async function sessionStartText({ cwd, sessionId, parentSession = null })
     const last = st?.last_active ? Date.parse(st.last_active) : NaN;
     // informational only if the last copy activity is stale, not merely recent
     if (Number.isFinite(last) && Date.now() - last > STALE_THRESHOLD_MS) {
-      return `${PREFIX} 上会话副本长期未收尾（${st.last_active}）：调 worktree_status 盘点，将未收尾副本与清理建议报告用户。`;
+      return `${PREFIX} 上会话副本长期未收尾（${st.last_active}）：调 worktree_status 盘点绑定；过期记录随后用 worktree_prune 回收。`;
     }
   }
   return null;

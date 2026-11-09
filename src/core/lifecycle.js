@@ -22,6 +22,18 @@ async function exists(p) {
   }
 }
 
+/**
+ * THE stale-binding predicate (issue #3): status and prune must agree on the
+ * same record. A binding is stale when its copy is no longer registered in
+ * `git worktree list` (deleted externally / previous session did not finish)
+ * or when the session stayed silent past the threshold.
+ */
+export function bindingStaleness(binding, roots, now = Date.now()) {
+  const gone = !roots.has(norm(binding.worktree));
+  const silent = now - Date.parse(binding.resolved_at ?? binding.entered_at ?? 0) > STALE_THRESHOLD_MS;
+  return { gone, silent, stale: gone || silent, reason: gone ? "worktree 已不存在" : "会话静默超阈" };
+}
+
 /** Sidecar merged over defaults (snake/camel normalized; MAIN-ROOT based — the
  *  session cwd may be a copy whose .dsh has no sidecar). */
 async function repoCfg(mainRoot) {
@@ -166,6 +178,7 @@ export async function status({ cwd, sessionId = null }) {
   const cd = await commonDir(cwd);
   const { mainRoot, entries } = await listWorktrees(cwd);
   const bindings = await listBindings(cd);
+  const roots = new Set(entries.map((e) => norm(e.root)));
   const now = Date.now();
   const copies = [];
   for (const e of entries) {
@@ -173,19 +186,33 @@ export async function status({ cwd, sessionId = null }) {
     const merged = e.branch ? await isAncestor(mainRoot, e.branch, "HEAD") : false;
     const dirty = await isDirtyForLifecycle(e.root);
     const boundBy = bindings.filter((b) => norm(b.worktree) === norm(e.root));
-    const staleSessions = boundBy.filter((b) => now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > STALE_THRESHOLD_MS);
+    const staleSessions = boundBy.filter((b) => bindingStaleness(b, roots, now).stale);
     copies.push({
       name: worktreeNameOf(e.root), root: e.root, branch: e.branch,
       merged_into_head: merged, dirty, bound_sessions: boundBy.length,
       stale: staleSessions.length > 0,
     });
   }
+  // Issue #3: the SAME predicate as prune, so "status says stale" always has a
+  // recyclable record behind it (the old hint came from state.last_active, which
+  // no binding has to back — prune then answered "nothing to recycle").
+  const stale_bindings = bindings
+    .map((b) => ({ b, s: bindingStaleness(b, roots, now) }))
+    .filter(({ s }) => s.stale)
+    .map(({ b, s }) => ({ sessionId: b.sessionId, worktree: b.worktree, reason: s.reason }));
   const mine = sessionId ? bindings.find((b) => b.sessionId === sessionId) ?? null : null;
   const rooted = mine ? norm(cwd) === norm(mine.worktree) : false;
+  // Informational-only record: last_active may point at a copy that was deleted
+  // after its binding was already recycled. It is stale when the directory is
+  // gone AND no binding still references it; prune clears it in that case.
+  const lastActive = (await readState(cd)).last_active;
+  const lastActiveStale = !!lastActive
+    && !bindings.some((b) => norm(b.worktree) === norm(lastActive))
+    && !(await exists(lastActive));
   return {
     mode: mine ? (rooted ? "rooted" : "repo-rooted") : "unbound",
-    binding: mine, copies,
-    stale_state_hint: mine ? null : (await readState(cd)).last_active,
+    binding: mine, copies, stale_bindings,
+    stale_state_hint: lastActiveStale ? lastActive : null,
     orphan_dirs: await orphanDirs(mainRoot, entries),
   };
 }
@@ -215,7 +242,8 @@ async function orphanDirs(mainRoot, entries) {
   return out;
 }
 
-/** prune: drop bindings whose worktree AND branch are both gone, or session silent past threshold. */
+/** prune: drop stale bindings (see bindingStaleness — the SAME predicate status
+ *  uses) and clear an informational last_active pointing at a vanished path. */
 export async function prune({ cwd, dryRun = false }) {
   const cd = await commonDir(cwd);
   const bindings = await listBindings(cd);
@@ -224,15 +252,31 @@ export async function prune({ cwd, dryRun = false }) {
   const now = Date.now();
   const dropped = [];
   for (const b of bindings) {
-    const gone = !roots.has(norm(b.worktree));
-    const silent = now - Date.parse(b.resolved_at ?? b.entered_at ?? 0) > STALE_THRESHOLD_MS;
-    if (gone || silent) {
-      dropped.push({ sessionId: b.sessionId, worktree: b.worktree, reason: gone ? "worktree 已不存在" : "会话静默超阈" });
+    const s = bindingStaleness(b, roots, now);
+    if (s.stale) {
+      dropped.push({ sessionId: b.sessionId, worktree: b.worktree, reason: s.reason });
       if (!dryRun) await deleteBinding(cd, b.sessionId);
     }
   }
-  if (!dryRun && dropped.length) await appendAudit(cd, { type: "prune", dropped });
-  return { dropped, dryRun };
+  // issue #3: last_active is informational (never a binding), so it can outlive
+  // its binding. When the path is gone and nothing references it anymore, clear
+  // it — otherwise status keeps nagging and prune keeps saying "nothing to
+  // recycle" (the exact loop in the report).
+  let cleared_last_active = false;
+  if (!dryRun) {
+    const st = await readState(cd);
+    if (st.last_active && !(await exists(st.last_active))) {
+      const remaining = await listBindings(cd);
+      if (!remaining.some((b) => norm(b.worktree) === norm(st.last_active))) {
+        await updateState(cd, { last_active: null });
+        cleared_last_active = true;
+      }
+    }
+  }
+  if (!dryRun && (dropped.length || cleared_last_active)) {
+    await appendAudit(cd, { type: "prune", dropped, cleared_last_active });
+  }
+  return { dropped, dryRun, cleared_last_active };
 }
 
 export function slugify(name) {

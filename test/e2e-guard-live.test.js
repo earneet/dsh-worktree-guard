@@ -110,10 +110,11 @@ test("G8 pwsh: push 受保护分支 deny；push 本分支 allow", async () => {
   assert.equal((await guard(mkExec({ tool: "pwsh", args: { command: "git push origin worktree-e2e-live" }, cwd: wt }))).kind, "allow");
 });
 
-test("G9 pwsh: 主根 cwd 上裸 push（当前分支 main）-> deny", async () => {
-  const d = await guard(mkExec({ tool: "pwsh", args: { command: "git push" }, cwd: repo }));
-  assert.equal(d.kind, "deny");
-  assert.match(d.reason, /受保护分支/);
+test("G9 pwsh: 未绑定主 checkout 裸 push（当前分支 main）-> allow（0.2.3 审计放行）", async () => {
+  // the file's default session "e1" is bound; use a fresh unbound session so the
+  // relaxed current-branch publication path applies.
+  const d = await guard(mkExec({ tool: "pwsh", args: { command: "git push" }, cwd: repo, sessionId: "g9-unbound" }));
+  assert.equal(d.kind, "allow");
 });
 
 test("G10 pwsh: git branch 涉及 worktree 分支 deny；无关分支 allow", async () => {

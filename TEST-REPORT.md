@@ -1,6 +1,16 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-10-14 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-13 后全量 163/163）**
+日期：2026-11-09 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-14 后全量 176/176）**
+
+## issue #1/#2/#3 修复轮（round-14，2026-11-09）
+
+用户在本会话从 GitHub 拉取三个真实使用反馈（issue #1/#2/#3），并追加"agent 无法执行 `git push origin master`"的现场问题。修复与验证：
+
+- **push 主干（issue #1 + 现场问题）**：0.2.2 的行为是"任何受保护分支 push 一律 deny"，而 deny 指向的 `worktree_authorize_main` 在 `approval=never`（danger-full-access 预设）会话中又被 pre-execute 判定为"审批通道不可用"直接拒绝——形成"提示调 A、A 必失败"的闭环。0.2.3 改为按用户确认的策略收窄：**未绑定 + 会话根在主 checkout + 推送当前所在受保护分支**（`git push origin master`、裸 `git push`、`git push origin HEAD:master` 等）放行并写 `allow_protected_push` 审计；绑定副本会话、非当前受保护分支、`--force`/`--force-with-lease`/`--delete`/`--all`/`--mirror`/`+refspec` 仍 deny；`--dry-run` 只读放行（旧版连 dry-run 也拦，现场复现确认）。deny 文案按"绑定会话 / 非当前分支 / 破坏性选项"分流，并显式说明 `worktree_authorize_main` 在 approval=never 会话不可用。
+- **issue #2（已删除副本误判为 main）**：`git -C`/`--git-dir`/`--work-tree` 目标不存在且词法落在 mainRoot 内时，guard 侧用 fs 探测出 `missingPaths` 传给纯决策层；deny 改为"路径当前不存在，可能曾是副本且已被清理"，下一步指向 `worktree_status`/`worktree_prune`，不再让用户 cd 进不存在目录。
+- **issue #3（status/prune 判定不一致）**：抽出唯一过期谓词 `bindingStaleness`（副本不在 `git worktree list` 或静默超阈），status 新增 `stale_bindings` 列表并给出 `worktree_prune` 动作（删除"调 worktree_status"自指文案）；prune 非 dry-run 时同时清理指向已消失路径的 `state.json.last_active`，即使已无可回收绑定也能终止旧提示循环。
+- **测试基础设施**：Windows Git for Windows 系统配置默认 `core.fsmonitor=true`，全量套件并发创建临时 worktree 时会卡死在 `git reset --hard` / `git add`（本次实测）。新增 `scripts/run-tests.mjs` 仅为测试子进程设置 `GIT_CONFIG_KEY_0=core.fsmonitor=false`（不改用户配置），`npm test` 稳定跑完。
+- **测试**：新增 [test/round14-issues.test.js](test/round14-issues.test.js)（13 项：push 放行/审计、绑定与破坏性仍拦、dry-run、无 cwd 默认不变、已删副本文案、status/prune 收敛与 last_active 清理）；更新 G9 与 R13-F2/F3 以匹配新策略。全量 `npm test` → **176/176 pass**（round-14 前 163）；`npm run verify:package` 通过。
 
 ## 审批禁用会话修复轮（round-13，issue #1 驱动）
 
@@ -65,8 +75,9 @@ GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell �
 | 3. CLI 端到端（真实临时仓库，wt.js 全命令） | 新增 [test/e2e-cli-run.ps1](test/e2e-cli-run.ps1)（23 项） | ✅ 23/23 |
 | 4. 迭代回归（round-7） | 新增 [test/round7-iterations.test.js](test/round7-iterations.test.js)（3 项） | ✅ 3/3 |
 | 5. 加固回归（round-8） | 新增 [test/round8-hardening.test.js](test/round8-hardening.test.js)（17 项） | ✅ 17/17 |
+| 6. issue 修复回归（round-14） | 新增 [test/round14-issues.test.js](test/round14-issues.test.js)（13 项） | ✅ 13/13 |
 
-全量回归：`npm test` → **132/132 pass**（round-7/8 已并入套件）。
+全量回归：`npm test` → **176/176 pass**（round-7/8/13/14 已并入套件）。
 
 ## 守卫网覆盖（G 系列，经 decideToolCall 实测）
 

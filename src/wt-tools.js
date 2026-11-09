@@ -177,6 +177,7 @@ export function toolSpecs(helpers) {
           mode: { type: "string", enum: ["rooted", "repo-rooted", "unbound"] },
           binding: { oneOf: [{ type: "null" }, S.loose()] },
           copies: { type: "array", items: S.loose() },
+          stale_bindings: { type: "array", items: S.loose() },
           stale_state_hint: S.nullableStr(),
           orphan_dirs: { type: "array", items: { type: "string" } },
           error: S.err(),
@@ -186,7 +187,14 @@ export function toolSpecs(helpers) {
           if (e) return e;
           const lines = [
             `模式：${v.mode}${v.binding?.worktree ? `（绑定 ${v.binding.worktree}）` : ""}`,
-            ...(v.stale_state_hint ? [`提示：上会话副本未收尾（${v.stale_state_hint}）：调 worktree_status 盘点，将未收尾副本与清理建议报告用户。`] : []),
+            ...(v.stale_bindings?.length
+              ? [
+                  `过期绑定（${v.stale_bindings.length}）：`,
+                  ...v.stale_bindings.map((b) => ` - 会话 ${b.sessionId}（${b.worktree}）：${b.reason}`),
+                  `下一步：调 worktree_prune 回收这些绑定。`,
+                ]
+              : []),
+            ...(v.stale_state_hint ? [`提示：state.json 的 last_active 指向已不存在的路径（${v.stale_state_hint}）：调 worktree_prune 清理该信息性记录。`] : []),
             ...v.copies.map((c) =>
               ` - ${c.name} [${c.branch ?? "?"}] ${c.merged_into_head ? "已合并(证明)" : "未合并"}${c.dirty ? " 有未提交变更" : ""}${c.stale ? " ⚠️stale绑定" : ""}`),
           ];
@@ -230,11 +238,11 @@ export function toolSpecs(helpers) {
       parameters: { type: "object", properties: { dry_run: bool("list only, drop nothing") } },
       output: {
         schema: S.obj({
-          dryRun: S.bool(true), dropped: { type: "array", items: S.loose() }, error: S.err(),
+          dryRun: S.bool(true), dropped: { type: "array", items: S.loose() }, cleared_last_active: S.bool(), error: S.err(),
         }, ["dryRun", "dropped"]),
         render: (_a, v) => renderError(v) ?? blocks(
-          v.dropped.length === 0 ? "无可回收绑定。"
-            : `${v.dryRun ? "[dry-run] 将回收" : "已回收"} ${v.dropped.length} 个绑定：\n` + v.dropped.map((d) => ` - ${d.sessionId}（${d.worktree}）：${d.reason}`).join("\n"),
+          (v.dropped.length === 0 ? "无可回收绑定。" : `${v.dryRun ? "[dry-run] 将回收" : "已回收"} ${v.dropped.length} 个绑定：\n` + v.dropped.map((d) => ` - ${d.sessionId}（${d.worktree}）：${d.reason}`).join("\n"))
+          + (v.cleared_last_active ? "\n已清理 state.json 中指向已不存在路径的 last_active 记录。" : ""),
         ),
       },
       async execute(args, exec) {

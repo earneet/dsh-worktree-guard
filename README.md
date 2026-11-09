@@ -9,7 +9,7 @@
 ## 它做什么
 
 - **会话根模式（产品本体）**：`worktree_create` 建副本后，以副本为会话根新开会话 → DSH 沙箱自动锚定，写隔离即结构。
-- **常开安全网**（是否绑定都生效）：跨副本写入、写 `.git`/状态区、push 受保护分支（master/main）、删 worktree 分支、`git -C` 定向到主根 → deny + 单轮可执行的指令。
+- **常开安全网**（是否绑定都生效）：跨副本写入、写 `.git`/状态区、删 worktree 分支、`git -C` 定向到主根 → deny + 单轮可执行的指令。push 受保护分支（master/main）默认拦截；**唯一放行例外（0.2.3，issue #1）**：未绑定会话、会话根就在主 checkout、且推送的是**当前所在**受保护分支 → 放行并写 `allow_protected_push` 审计。绑定会话、非当前受保护分支、`--force`/`--force-with-lease`/`--delete`/`--all`/`--mirror`/`+refspec` 仍拦；`--dry-run` 只读放行。
 - **读域守卫**：绑定态读主 checkout → 放行 + 溯源标记（默认 warn）或 deny（strict）——防止"写对地方、改错东西"。
 - **机械人闸**：`worktree_authorize_main`/`worktree_allow` 走 pre-execute ask 门，模型无法自授；审批提示被禁用的会话（`approval=never`）改为带人工通道指引的 deny，并可用 CLI 交互式挑战完成授权。
 - **收尾零债**：merge-base 证明式"已合并"判定、死绑定 prune、全树摘链接后再删副本（防 junction 穿透）。
@@ -66,6 +66,8 @@ node wt.js status
 - **CLI 确认码是"运行期挑战"，不是结构边界**：它由插件机械校验，只证明"有东西在该终端键入了显示出来的码"；能读取控制台缓冲区并注入键盘输入的程序可以重放（与任意代码执行同级，见设计 §14.3）。真正的结构级人闸仍是宿主 ask 门。
 - shell 词法网对包含 `authorize-main` 字面量的命令**默认整条拦截**（fail-closed：原文与归一化视图都查）；唯一例外是**纯只读检查链**——`Select-String`/`grep`/`rg`/`Get-Content`/`git log|grep|show…` 等只读段用 `;`、`|` 或换行串联，且**不含**脚本块/命令替换、文件重定向（`2>&1` 这类 fd 复制除外）、内联执行 flag（`rg --pre`、`git grep -O…`、`--output` 等）。提交信息、`Write-Host`/`echo` 写入型命令、变量拼接、别名调用仍会被拦或属已知边界（设计 §14）。
 - **仓库安全配置**（`<repo>/.dsh/worktree-guard.json`）由用户维护：`write`/`edit` 工具对它的写入被 deny（shell 直写仍属 §14 词法边界）；`protected_branches` 只增不减（默认 master/main 始终受保护），避免"改配置关掉 push 网"。确需改配置请用户手动编辑。
+- **push 主干的死路已消除（0.2.3，issue #1）**：在**未绑定**、会话根就在主 checkout 上工作的普通"提交并推送"场景，`git push origin master` / `git push` / `git push origin HEAD:master` 现在直接放行并写审计（这是用户自己的主干工作流，不是副本误推主干）。以下仍被拦截：绑定副本会话的受保护分支推送、推送非当前受保护分支、`--force`/`--force-with-lease`/`--delete`/`--all`/`--mirror`/`+refspec`；`--dry-run` 在任何状态放行（只读）。不满足放行条件时，deny 文案会说明是"绑定会话 / 非当前分支 / 破坏性选项"，并明确 `worktree_authorize_main` 在 `approval=never` 会话中不可用，不再制造"提示调 A、A 必失败"的闭环。
+- **过期绑定诊断（0.2.3，issue #2/#3）**：`git -C` 指向已删除的副本路径时，deny 会说"路径已不存在（可能曾是被清理的副本）"并指向 `worktree_status`/`worktree_prune`，而不是误报"指向主 checkout"；`worktree_status` 与 `worktree_prune` 共用同一过期谓词，status 直接列出 `stale_bindings` 并给出 `worktree_prune` 动作，prune 同时清掉指向已消失路径的 `state.json.last_active`。
 
 ## 开发
 
@@ -74,7 +76,7 @@ npm test              # 决策表单测 + 真实临时仓库集成测 + 回归�
 npm run verify:package # 打包冒烟：npm pack → 解包 → 跑发布的 wt.js / CLI_PATH / 非 TTY 门禁
 ```
 
-CI 在 ubuntu-latest 与 windows-latest 上跑全量测试，另跑打包冒烟；release 工作流在发布前校验 `v<tag>` 与 `package.json` 版本一致。
+`npm test` 经 `scripts/run-tests.mjs` 启动，仅为测试里创建的临时仓库临时关闭 git fsmonitor（Windows Git for Windows 的系统配置默认 `core.fsmonitor=true`，并发创建 worktree 时可能卡死在 `git reset --hard`）；不修改用户 git 配置。CI 在 ubuntu-latest 与 windows-latest 上跑全量测试，另跑打包冒烟；release 工作流在发布前校验 `v<tag>` 与 `package.json` 版本一致。
 
 零依赖纯 ESM（Node ≥20，Windows 优先适配）。
 

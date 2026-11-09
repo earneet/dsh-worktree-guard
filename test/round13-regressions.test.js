@@ -452,6 +452,10 @@ test("R13-F3 plugin Config cannot drop the default protected branches", async ()
     await writeFile(join(dir, "a.txt"), "x");
     git("add", ".");
     git("commit", "-m", "i", "-q");
+    // 0.2.3: an unbound session rooted on the protected branch may publish the
+    // CURRENT branch; move off main first so these assertions keep testing the
+    // net (non-current protected refspecs are still denied).
+    git("checkout", "-b", "feature-work");
     bustGuardContextCache();
     const mkExec = (command) => ({ name: "pwsh", arguments: { command }, callId: `f3-${command}`, agent: { session: { header: { id: "s1", cwd: dir } } } });
     const opts = { protectedBranches: ["pluginExtra"] };
@@ -476,6 +480,10 @@ test("R13-F2 sidecar cannot weaken protection and the model cannot write it", as
     git("commit", "-m", "i", "-q");
     await mkdir(join(dir, ".dsh"), { recursive: true });
     await writeFile(join(dir, ".dsh", "worktree-guard.json"), JSON.stringify({ protected_branches: ["zzz"] }));
+    // 0.2.3: current-branch publication is allowed on the main checkout; move to
+    // a non-protected branch so this test still proves sidecar cannot weaken the
+    // protected set (pushing main from elsewhere remains denied).
+    git("checkout", "-b", "feature-work");
     bustGuardContextCache();
     const mkExec = (tool, args) => ({ name: tool, arguments: args, callId: `f2-${tool}`, agent: { session: { header: { id: "s1", cwd: dir } } } });
     const push = await decideToolCall(mkExec("pwsh", { command: "git push origin main" }), {});

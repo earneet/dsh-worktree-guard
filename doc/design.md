@@ -35,7 +35,7 @@
 
 1. **写位置正确**——会话根模式为主解：主根在 workspace root 之外，越界写被沙箱**结构拒绝**。
 2. **读位置正确**——相对路径读天然落副本（结构默认）+ 读域守卫（词法）：绑定态读主根 → 溯源标记或 deny（§6.1）。"写对地方"与"改对东西"缺一不可。
-3. **误毁主分支常开兜底**——push master/main、写 `.git`/git-common-dir、删 worktree 分支，任何时候拦截（词法级，deny 消息即防线）。
+3. **误毁主分支常开兜底**——push master/main、写 `.git`/git-common-dir、删 worktree 分支，默认拦截（词法级，deny 消息即防线）。**唯一放行例外（0.2.3，issue #1）**：未绑定会话、会话根就在主 checkout、且推送的是当前所在受保护分支 → 放行 + `allow_protected_push` 审计；绑定会话、其他受保护分支与破坏性选项（force/delete/all/mirror）仍拦。
 4. **合并回主干的人机权限边界**——authorize-main：机械人闸（ask 门）+ TTL + 审计。
 5. **收尾零债**——merge-base 显式验证（`--is-ancestor`）+ status 盘点 + 死绑定 prune + 链接穿透安全删除。
 6. **状态常显**——常驻状态行 + 🌿 会话标题 + deny 前缀（误用防范 90% 靠状态可见）。
@@ -127,7 +127,7 @@ DSH 工具面（以会话实际暴露为准）。**绑定态 = 会话有绑定�
 | `write`/`edit` | `file_path` | 归一化后落入其他副本（**常开**，未绑定亦拦）/ `.git` / git-common-dir `/worktree-guard/` 状态区 / 主根的 `.dsh/worktree-guard.json` 安全配置 → **deny + 指令**；主根路径 → deny + "以副本为根开会话"（rooted 下通常已被沙箱先拒，此处纵深） | 放行（宿主沙箱语义；跨副本/`.git`/安全配置除外） | 词法启发（纵深） |
 | `read`/`read_image` | `file_path` | **读域守卫（§6.1）**：命中主根 → 默认 warn 放行 + 溯源标记；`read_policy:"strict"` → deny + 指令；其他副本 / `.git` 读放行（排障） | 放行 | 词法启发 |
 | `glob`/`grep` | `path` | 同 read 读域守卫（缺省 path 天然落副本，结构默认） | 放行 | 词法启发 |
-| `pwsh` | `command` | 文本检查：`push`→protected、`branch -D worktree-*`、`git -C <主根>`、主根绝对路径残余 → **deny + 指令** | 同规则常开（安全网部分） | 词法启发 |
+| `pwsh` | `command` | 文本检查：`push`→protected（**0.2.3 例外**：未绑定 + 根在主 checkout + 推当前受保护分支 → allow + 审计）、`branch -D worktree-*`、`git -C <主根>`（目标不存在时给"已清理副本"诊断）、主根绝对路径残余 → **deny + 指令**；`--dry-run` 只读放行 | 同规则常开（安全网部分；含 push 例外） | 词法启发 |
 | 后台 job / subagent / workflow | — | 同一 pre-execute 覆盖（C6）；workflow 内联脚本无 fs API（实测）；MCP 写盘不在范围（§14） | — | — |
 | `worktree_authorize_main` / `worktree_allow` | — | **pre-execute 返回 `{kind:"ask"}`**（P4 机械人闸）；审批策略 `never` 的会话没有应答者，宿主必自动拒绝 → 直接 **deny + 人工通道指令**（round-13，§11） | 同 | 结构（ask）/ 运行期拒绝（never） |
 
@@ -223,9 +223,9 @@ M1: create {task_name}      # .worktrees/worktree-<slug> + 分支 + sync 复制/
     #   + C10: 引导/触发以副本为根的新会话
     enter {path}            # 仅 rooted 会话有效；repo-rooted 会话 → 拒绝并引导
     exit {action}           # 解绑；remove 联动清理
-    status {}               # 绑定/模式/已合并可清理（merge-base 证明式）/孤儿目录/stale
+    status {}               # 绑定/模式/已合并可清理（merge-base 证明式）/孤儿目录/stale_bindings（与 prune 同一过期谓词）
 M2: remove {path, confirm_remove, delete_branch}
-    prune {dry_run?}        # 死绑定回收（C8 或静默超阈）
+    prune {dry_run?}        # 死绑定回收（C8 或静默超阈）+ 清理指向已消失路径的 last_active
     authorize_main {reason, ttl_minutes?}   # ask_user 人闸；TTL 默认 15min
     revoke_main {}
     allow {action, path, reason, ttl_minutes?}  # 同走人闸；默认 60min
@@ -270,7 +270,7 @@ M2: remove {path, confirm_remove, delete_branch}
 
 ## 14. 已知边界（P6 分级词汇，写进 README）
 
-1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag/诱饵变体、push 远程删除、**shell 相对路径写守卫状态区**（`Set-Content ../../.git/worktree-guard/...`、裸目录 `cd .git/worktree-guard` + 相对写、guard 模块 import、authorize 动词）已拦（对抗审查 R1–R3 + round-13 修复）；**嵌套执行器（`cmd /c`、`pwsh -Command`、`iex`）、引号/反引号拼接（`git pus""h`）、子表达式 `$()`、多行脚本、`git config alias`+别名调用经 round-8 归一化 seam 拦截**（`alias` 残余与 env 变量同类，仍属词法边界）；**authorize 字面动词默认整条命令 fail-closed**（raw + 归一化视图都查），唯一例外是**纯只读检查链**（`Select-String`/`grep`/`Get-Content`/`git log…` 等只读段经 `;`/`|`/换行串联，且不含脚本块、命令替换、文件重定向（`2>&1` fd 复制除外）、`Write-Host`/`echo` 等写入型命令、`rg --pre`/`git grep -O…`/`--output` 等内联执行 flag）——round-13 修复"纯读取命令被自授规则误伤"；提交信息/混合命令/变量拼接/别名调用仍拦或属边界（**分段 `cd .git` 再 `cd worktree-guard` 未被拦截，属 §14.3 边界**）；rooted 下 shell 沙箱兜底（写主根=物理拒绝；注意 **push 是网络操作，无沙箱兜底，词法网是唯一防线**），repo-rooted 接不住（故后置）。
+1. pwsh 文本检查：8.3 短名、`$env:`/`Resolve-Path`/`FileSystem::` 拼路径可绕——**词法启发，非边界**；复合命令的 checkout-protected、`git -C ..` 相对逃逸、`git branch` flag/诱饵变体、push 远程删除、**shell 相对路径写守卫状态区**（`Set-Content ../../.git/worktree-guard/...`、裸目录 `cd .git/worktree-guard` + 相对写、guard 模块 import、authorize 动词）已拦（对抗审查 R1–R3 + round-13 修复）；**嵌套执行器（`cmd /c`、`pwsh -Command`、`iex`）、引号/反引号拼接（`git pus""h`）、子表达式 `$()`、多行脚本、`git config alias`+别名调用经 round-8 归一化 seam 拦截**（`alias` 残余与 env 变量同类，仍属词法边界）；**authorize 字面动词默认整条命令 fail-closed**（raw + 归一化视图都查），唯一例外是**纯只读检查链**（`Select-String`/`grep`/`Get-Content`/`git log…` 等只读段经 `;`/`|`/换行串联，且不含脚本块、命令替换、文件重定向（`2>&1` fd 复制除外）、`Write-Host`/`echo` 等写入型命令、`rg --pre`/`git grep -O…`/`--output` 等内联执行 flag）——round-13 修复"纯读取命令被自授规则误伤"；提交信息/混合命令/变量拼接/别名调用仍拦或属边界（**分段 `cd .git` 再 `cd worktree-guard` 未被拦截，属 §14.3 边界**）；rooted 下 shell 沙箱兜底（写主根=物理拒绝；注意 **push 是网络操作，无沙箱兜底，词法网是唯一防线**），repo-rooted 接不住（故后置）。**0.2.3 push 例外**：仅"未绑定 + 根在主 checkout + 推当前受保护分支"放行并审计——该判断同样是词法级（cwd 分类 + refspec 解析），绑定态、非当前分支与破坏性选项不适用（issue #1 的改进来自用户明确批准的收窄方式）。
 2. 读域守卫同属**词法启发**：junction/8.3 别名可绕过判域；strict 误判代价是多余 deny + 重试，不是错误放行——方向安全。
 3. danger-full-access 下的一切守卫 = **纯纪律级**：任意脚本内容不受检、可直接写状态文件/配置（故 sidecar 写被词法网拦，但脚本内容仍属此边界）。
 4. MCP 工具/第三方进程写盘不在范围——靠纪律 + 会话根对冲。

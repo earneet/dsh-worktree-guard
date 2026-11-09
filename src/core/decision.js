@@ -149,7 +149,79 @@ const HUMAN_GATE_HINT = `若本会话审批提示被禁用（approval=never，�
 // CLI path / typed-code / TTL detail lives in the gated tools' own deny+marker
 // (design §7 copy budget: a 300-char conditional paragraph on every push deny
 // dilutes the instruction and repeats what the tool will say anyway).
-const HUMAN_GATE_BRIEF = `若授权工具返回"审批被禁用"或自动拒绝，不要重复调用：请用户手动推送/合并，或按该工具消息中的方式用插件 CLI 完成授权（仓库级 TTL）。`;
+// 0.2.3 (issue #1): the brief must not pretend the ask-gated tool works in an
+// approvals-disabled session — it names that dead channel explicitly instead.
+const HUMAN_GATE_BRIEF = `若本会话审批提示被禁用（approval=never），worktree_authorize_main 会被宿主自动拒绝——不要重复调用：请用户手动推送/合并，或由用户在自己的交互式终端用插件 CLI 完成授权（仓库级 TTL）。`;
+
+// ---------- push policy (0.2.3, issue #1) ----------
+// An UNBOUND session rooted at the main checkout is the ordinary "work on the
+// main branch and publish it" world. Publishing the CURRENT branch a human is
+// already on is not a worktree copy escaping into main, so it is allowed AND
+// audited (guard.js records `allow_protected_push`). Everything that can move a
+// different ref, rewrite history or delete a remote ref stays denied:
+//   - bound sessions (copies) never publish a protected branch;
+//   - protected branches other than the current one;
+//   - --force / --force-with-lease / --force-if-includes / --mirror / --delete /
+//     --all / --prune, short-flag clusters carrying f/d, and `+refspec` pushes;
+//   - wrapper/splice forms are judged on the normalized command (same push).
+// `--dry-run` never transmits a write and is allowed in every state — denying it
+// was the false positive observed live when reproducing issue #1.
+const PUSH_DRY_RUN = /(?:^|\s)(?:--dry-run(?:\s|=|$)|-n(?:\s|$))/i;
+const PUSH_DESTRUCTIVE_LONG = /^(?:--force(?:-with-lease|-if-includes)?|--mirror|--delete|--all|--prune)\b/i;
+
+/** The part of the command after the matched `git push` up to the next separator. */
+function pushSegmentOf(cmd, mPush) {
+  return cmd.slice(mPush.index + mPush[0].length).split(/[\n\r;&|]/)[0];
+}
+
+/** Flags and positional tokens of a push segment (redirect tokens dropped). */
+function pushTokenView(seg) {
+  const raw = seg.split(/\s+/).filter(Boolean);
+  const flags = [];
+  const toks = [];
+  for (let i = 0; i < raw.length; i++) {
+    const tk = raw[i];
+    if (/^[\d&<>]+$/.test(tk)) { i++; continue; } // pure redirect token: skip it and its operand
+    if (tk.startsWith("-")) flags.push(tk);
+    else toks.push(tk);
+  }
+  return { flags, toks };
+}
+
+function isDestructivePush(flags, refs) {
+  for (const f of flags) {
+    if (PUSH_DESTRUCTIVE_LONG.test(f)) return true;
+    if (/^-[^-]/.test(f) && /[fd]/.test(f.slice(1))) return true; // -f, -d and clusters
+  }
+  return refs.some((r) => {
+    if (r.startsWith("+")) return true; // forced refspec
+    // `:dst` (empty source) deletes the remote ref — same intent as --delete.
+    return r.replace(/^\+/, "").startsWith(":");
+  });
+}
+
+/** Destination branch name of one refspec (`src:dst`, `dst`, `+dst`). */
+function pushRefDestination(refspec) {
+  const dst = refspec.split(":").pop().replace(/^\+/, "");
+  return dst.replace(/^refs\/heads\//, "");
+}
+
+/** Is the session root lexically the main checkout (copies are checked first)? */
+function cwdIsMainCheckout(cwd, ctx) {
+  if (!cwd) return false;
+  return classifyTarget({ target: norm(cwd), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir }).kind === "main";
+}
+
+/** True when this push publishes the CURRENT branch under its own name. */
+function publishesCurrentBranch({ cmd, mPush, currentBranchName }) {
+  const { flags, toks } = pushTokenView(pushSegmentOf(cmd, mPush));
+  if (isDestructivePush(flags, toks.slice(1))) return false;
+  if (toks.length <= 1) return true; // no refspec: implicit "push current branch"
+  return toks.slice(1).every((r) => {
+    const dst = pushRefDestination(r);
+    return dst === currentBranchName || dst === "HEAD" || dst === "@";
+  });
+}
 
 // human-only authorization (P4): fail-closed on the literal verb in EITHER the
 // raw text or the normalized (quote-stripped, wrapper-folded) view — a command
@@ -214,7 +286,7 @@ const RE_GUARD_MODULE = new RegExp(
   ].join("|"),
 );
 
-export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = {}) {
+export function decidePwsh({ command, currentBranchName, cwd = null, missingPaths = null }, ctx, binding, auth = {}) {
   const rawCmd = typeof command === "string" ? command : "";
   const cmd = normalizePwshCommand(rawCmd); // round-8 detection view (see above)
   const summarizeOf = () => summarize(rawCmd);  // sanitize config: non-string entries must never crash the net into fail-open
@@ -245,8 +317,17 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   // 1) push mentioning a protected ref (anywhere in the command: errs safe for a lexical net)
   const mPush = cmd.match(RE_PUSH);
   const protRe = new RegExp(`\\b(?:${prot.map(esc).join("|")})\\b`, "i");
+  // A dry run never updates a remote ref: it is read-only in every state and
+  // denying it was a live false positive while reproducing issue #1.
+  if (mPush && PUSH_DRY_RUN.test(pushSegmentOf(cmd, mPush))) return allow();
   if (mPush && protRe.test(cmd)) {
     if (authorized) return allow(); // user-gated grant (TTL)
+    // 0.2.3: the one relaxed case — unbound, rooted at the main checkout, and
+    // pushing the very branch the human is already on. Audited by guard.js.
+    if (!binding && currentBranchName && prot.includes(currentBranchName) && cwdIsMainCheckout(cwd, ctx)
+      && publishesCurrentBranch({ cmd, mPush, currentBranchName })) {
+      return allow({ audit: "allow_protected_push" });
+    }
     // round-8/copy review: a push only visible after normalization (quote splice
     // or wrapper) gets its OWN effect-oriented reason — generic text makes the
     // model assume a false positive and retry with another wrapper. Wording
@@ -254,7 +335,13 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
     if (!RE_PUSH.test(rawCmd)) {
       return deny("pwsh", summarizeOf(), "该命令经拼接或包装后仍会将提交推送到受保护分支；包装形式不改变拦截结果", `如确需推送受保护分支，取得用户同意后调用 worktree_authorize_main（TTL 授权后可执行等效 git 命令）。${HUMAN_GATE_BRIEF}`);
     }
-    return deny("pwsh", summarizeOf(), `push 目标包含受保护分支（${prot.join("/")}）`, `合并回主干需用户授权：经用户同意后调用 worktree_authorize_main（TTL 自动失效）。${HUMAN_GATE_BRIEF}`);
+    if (binding) {
+      return deny("pwsh", summarizeOf(), `push 目标包含受保护分支（${prot.join("/")}）`, `本会话绑定副本 ${binding.worktree}：只能推送本副本的 worktree 分支；合并回主干走收尾授权流程。${HUMAN_GATE_BRIEF}`);
+    }
+    if (!currentBranchName || !prot.includes(currentBranchName)) {
+      return deny("pwsh", summarizeOf(), `push 目标包含受保护分支（${prot.join("/")}），但当前不在该分支`, `在主 checkout 上只放行"推送当前分支"（当前：${currentBranchName ?? "未知"}）；请先切换到目标分支，或由用户授权/手动推送。${HUMAN_GATE_BRIEF}`);
+    }
+    return deny("pwsh", summarizeOf(), `该 push 的目标不是当前分支，或带有强制/删除/全量等破坏性选项（受保护分支 ${prot.join("/")}）`, `主 checkout 上只放行"推送当前分支（${currentBranchName}）"；请去掉 --force/--force-with-lease/--delete/--all/--mirror 等选项并确认 refspec 指向当前分支后重试。${HUMAN_GATE_BRIEF}`);
   }
   // 1b) push DELETING a worktree branch (remote deletion, round-2 fix) — only the
   //     destructive forms (`--delete`/`-d`, or `:branch` refspec); pushing own branch stays open.
@@ -271,7 +358,7 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
   //    `git push origin worktree-x` cannot touch master and must stay open.
   //    HEAD/@ refspecs DO resolve to the current branch and stay netted.
   if (mPush && currentBranchName && prot.includes(currentBranchName)) {
-    const segRaw = cmd.slice(mPush.index + mPush[0].length).split(/[\n\r;&|]/)[0];
+    const segRaw = pushSegmentOf(cmd, mPush);
     // strip git flags AND PowerShell redirection (`2>&1`, `> out.log`) — a stray
     // redirect was parsed as a refspec and un-netted a bare push (R12-3).
     const raw = segRaw.split(/\s+/).filter(Boolean);
@@ -293,7 +380,14 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
     });
     const pushesCurrent = implicit || dstMovesCurrent;
     if (!authorized && pushesCurrent) {
-      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，无显式 refspec 的 push 等同推送主干`, `请显式指定目标分支/标签，或经用户同意后调用 worktree_authorize_main。${HUMAN_GATE_BRIEF}`);
+      // 0.2.3 (issue #1): bare `git push` from an unbound main-checkout session
+      // publishes the current protected branch — allow with audit unless the
+      // command carries destructive options.
+      if (!binding && cwdIsMainCheckout(cwd, ctx)) {
+        const { flags, toks: positional } = pushTokenView(segRaw);
+        if (!isDestructivePush(flags, positional.slice(1))) return allow({ audit: "allow_protected_push" });
+      }
+      return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，该 push 会推送主干`, `裸 push/HEAD 推送受保护分支只在"未绑定且根在主 checkout"时放行；破坏性选项仍被拦截，其他情况请指定显式 refspec 或由用户授权。${HUMAN_GATE_BRIEF}`);
     }
   }
   // 3) any `git branch` command touching a worktree branch token — decoy-first
@@ -316,6 +410,13 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
     }
     for (const p of extractAbsolutePaths(cmd.slice(mC.index))) {
       const cls = classifyTarget({ target: norm(p), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
+      // issue #2: a deleted copy root is lexically inside mainRoot but is not a
+      // registered worktree anymore, so classifyTarget calls it "main". Say the
+      // path is GONE instead of asserting the user pointed at the main checkout;
+      // otherwise the "next step" (cd into it) fails with ENOENT and misleads.
+      if (cls.kind === "main" && missingPaths?.has(norm(p))) {
+        return deny("pwsh", summarizeOf(), "git 定向参数指向主 checkout 内一个已不存在的路径", `该路径可能曾是 worktree 副本且已被清理（${clipPath(p)}）；先调用 worktree_status 盘点绑定，必要时 worktree_prune 回收过期绑定，请勿再引用该路径。`);
+      }
       if (cls.kind === "main" || (cls.kind === "worktree" && binding && norm(cls.root) !== norm(binding.worktree)) || cls.kind === "git-meta") {
         return deny("pwsh", summarizeOf(), `git 定向参数指向 ${cls.kind === "main" ? "主 checkout" : cls.kind === "git-meta" ? ".git 元数据" : `其他副本 ${cls.name ?? ""}`}`, `本会话${binding ? `绑定副本 ${binding.worktree}，` : ""}请在目标副本目录内直接执行 git 命令。`);
       }
@@ -339,8 +440,29 @@ export function decidePwsh({ command, currentBranchName }, ctx, binding, auth = 
 
 // ---------- shared ----------
 
-function allow() {
-  return { kind: "allow" };
+function allow(extra) {
+  return extra ? { kind: "allow", ...extra } : { kind: "allow" };
+}
+
+function clipPath(p) {
+  const s = String(p);
+  return s.length > 80 ? s.slice(0, 77) + "..." : s;
+}
+
+/**
+ * Raw targets of `git -C` / `--git-dir` / `--work-tree` options (issue #2).
+ * Lexical only; the caller resolves them and feeds `missingPaths` so this
+ * module keeps its no-fs contract.
+ */
+export function extractGitRetargets(command) {
+  const out = [];
+  const re = new RegExp(RE_GIT_C.source, "gi");
+  let m;
+  while ((m = re.exec(command))) {
+    const t = m[2] ?? m[3] ?? m[4];
+    if (typeof t === "string" && !t.startsWith("--")) out.push(t.replace(/^["']|["']$/g, ""));
+  }
+  return out;
 }
 
 function deny(tool, subject, reason, next) {

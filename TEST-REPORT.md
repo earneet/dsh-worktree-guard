@@ -1,6 +1,6 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-11-09 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-14 后全量 176/176）**
+日期：2026-11-09 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-15 后全量 185/185）**
 
 ## issue #1/#2/#3 修复轮（round-14，2026-11-09）
 
@@ -11,6 +11,14 @@
 - **issue #3（status/prune 判定不一致）**：抽出唯一过期谓词 `bindingStaleness`（副本不在 `git worktree list` 或静默超阈），status 新增 `stale_bindings` 列表并给出 `worktree_prune` 动作（删除"调 worktree_status"自指文案）；prune 非 dry-run 时同时清理指向已消失路径的 `state.json.last_active`，即使已无可回收绑定也能终止旧提示循环。
 - **测试基础设施**：Windows Git for Windows 系统配置默认 `core.fsmonitor=true`，全量套件并发创建临时 worktree 时会卡死在 `git reset --hard` / `git add`（本次实测）。新增 `scripts/run-tests.mjs` 仅为测试子进程设置 `GIT_CONFIG_KEY_0=core.fsmonitor=false`（不改用户配置），`npm test` 稳定跑完。
 - **测试**：新增 [test/round14-issues.test.js](test/round14-issues.test.js)（13 项：push 放行/审计、绑定与破坏性仍拦、dry-run、无 cwd 默认不变、已删副本文案、status/prune 收敛与 last_active 清理）；更新 G9 与 R13-F2/F3 以匹配新策略。全量 `npm test` → **176/176 pass**（round-14 前 163）；`npm run verify:package` 通过。
+
+## 引号内文本误报修复轮（round-15，issue #1 残余）
+
+round-14 的现场提交过程中又暴露同一类误报：`git commit -m "(git push origin master)"` 被拦（提交信息里的括号被当成命令位）。根因在 [src/core/decision.js](src/core/decision.js) 的 `normalizePwshCommand`：旧实现先全局剥掉所有引号，再按文本找命令位，导致引号内普通文本里的 `(`、`;`、`&&`、`|`、换行全部变成命令分隔符。
+
+- **检测视图改为引号感知（行为，高）**：普通引号字符串内的分隔符替换为非分隔符占位符，字符串其余内容保留（参数级规则继续看见 `git push origin "master"`、`git branch -d "worktree-x"` 等）。引号参数属于执行包装器时按**代码**递归归一化：`cmd /c`、`pwsh/powershell -c|-Command`、`iex`、`eval`，并补齐 `bash/sh/zsh/dash -c`（否则引号内分隔符中性化会让这些包装器漏检）。双引号内含 `$(` 时保留分隔符（命令替换仍会执行，fail-closed）。写入/折叠包装器时用 literal-data mask 阻止"提交信息里长得像包装器的文本"被折叠成命令位。
+- **有意不放宽的两条边界（P6/P4）**：`authorize-main` 字面动词仍然对**原始文本** fail-closed——`node wt.js "authorize-main"` 是真实 argv（引号里的子命令会被执行），而 CLI 的 TTY+随机码仍是最后屏障；`git "checkout" main` 同理不被"引号=数据"放过，宽松 checkout 规则保持不变。这两类"引号里的真实 argv"与"提交信息里的文本"在纯词法层无法安全区分，故不扩大改动。
+- **测试**：新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（9 项：括号/分号/`&&`/多行提交信息与宿主输出放行；`$()` 替换、独立括号、`cmd /c`/`bash -c`/`sh -c`/`pwsh -Command`/`iex`/`eval` 包装、多行脚本、引号拼接仍 deny；带引号的 refspec/分支名/checkout 参数检测不回退）。全量 `npm test` → **185/185 pass**；`npm run verify:package` 通过。
 
 ## 审批禁用会话修复轮（round-13，issue #1 驱动）
 
@@ -76,8 +84,9 @@ GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell �
 | 4. 迭代回归（round-7） | 新增 [test/round7-iterations.test.js](test/round7-iterations.test.js)（3 项） | ✅ 3/3 |
 | 5. 加固回归（round-8） | 新增 [test/round8-hardening.test.js](test/round8-hardening.test.js)（17 项） | ✅ 17/17 |
 | 6. issue 修复回归（round-14） | 新增 [test/round14-issues.test.js](test/round14-issues.test.js)（13 项） | ✅ 13/13 |
+| 7. 引号文本回归（round-15） | 新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（9 项） | ✅ 9/9 |
 
-全量回归：`npm test` → **176/176 pass**（round-7/8/13/14 已并入套件）。
+全量回归：`npm test` → **185/185 pass**（round-7/8/13/14/15 已并入套件）。
 
 ## 守卫网覆盖（G 系列，经 decideToolCall 实测）
 

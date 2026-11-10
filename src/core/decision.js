@@ -126,14 +126,122 @@ const RE_GIT_C = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+(?:-C\\s+(--\\S+|\\S+)|--g
 // folds the wrapper into a `;` separator and drops quoting/escape chars, so
 // inner commands hit the SAME rules with all their token logic intact.
 // Detection view only: the deny message quotes the RAW command (P3).
+// round-15: bash/sh/zsh/dash -c and eval are the same kind of executor (their
+// argument is CODE); folding them keeps the net closed after quoted-data
+// neutralization below.
 const RE_NESTED_EXEC =
-  /(^|[\s;&|(])(?:cmd(?:\.exe)?\s+\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-c\b|-command\b))|\b(?:iex|invoke-expression)\b/gi;
+  /(^|[\s;&|(])(?:cmd(?:\.exe)?\s+\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-c\b|-command\b)|(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c\b)|\b(?:iex|invoke-expression|eval)\b/gi;
+
+// ---------- quote-aware detection view (round-15, issue #1 residual) ----------
+// The old seam stripped ALL quote characters before matching, so literal text in
+// a commit message — `git commit -m "(git push origin master)"` — turned its `(`
+// into a command separator and was denied. Root cause: quote stripping erased
+// the distinction between CODE and quoted DATA. The view built here keeps that
+// distinction:
+//   - ordinary quoted content is preserved (argument-level rules still see
+//     branch names / refspecs / paths) but its command separators (`(`, `;`,
+//     `&`, `|`, newlines) become a non-separator placeholder;
+//   - the quoted argument of an execution wrapper is CODE and is normalized
+//     recursively (nested wrappers included);
+//   - double-quoted content containing `$(` keeps its separators: command
+//     substitution still executes there, so fail-closed;
+//   - quote/backtick characters themselves are still removed, which keeps the
+//     splice forms (`git pus""h`, `git pu\`sh`) normalizing to `git push`.
+// `mask[i]` marks characters that came from literal quoted DATA; wrapper
+// folding skips matches that touch the mask, so wrapper-looking text inside a
+// commit message is not folded into a separator either.
+// Honest boundary (P6): backtick command substitution inside double quotes and
+// arbitrary script hosts (`node -e`, `python -c`, …) remain outside this
+// lexical net; they were never promised and are unchanged by this seam.
+const QUOTED_SEP = "\u0001";
+const RE_SUBSTITUTION = /\$\(/;
+const RE_CODE_WRAPPER_TAIL =
+  /(?:^|[\n\r;&|(])\s*(?:cmd(?:\.exe)?\s+\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-c\b|-command\b)|(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c\b|(?:iex|invoke-expression|eval))\s*$/i;
+
+function neutralizeQuotedSeparators(s) {
+  return s.replace(/[\n\r;&|(]/g, QUOTED_SEP);
+}
+
+function pushText(state, text, literal) {
+  state.text += text;
+  state.codeView += literal ? QUOTED_SEP.repeat(text.length) : text;
+  for (let i = 0; i < text.length; i++) state.mask.push(literal);
+}
+
+/** Append a recursively normalized view, preserving its literal-data mask. */
+function appendView(state, inner) {
+  state.text += inner.text;
+  state.codeView += inner.codeView;
+  for (let i = 0; i < inner.mask.length; i++) state.mask.push(inner.mask[i]);
+}
+
+/** Unfolded quote-aware view + literal-data mask (see the block comment above). */
+function quoteAwareView(src, depth) {
+  const state = { text: "", mask: [], codeView: "" };
+  if (depth > 8) { pushText(state, src, false); return state; }
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "`") { // PowerShell escape: keep the escaped character
+      if (i + 1 < src.length) pushText(state, src[++i], false);
+      continue;
+    }
+    if (ch !== "'" && ch !== '"') { pushText(state, ch, false); continue; }
+    const quote = ch;
+    let j = i + 1;
+    let content = "";
+    let closed = false;
+    while (j < src.length) {
+      const c = src[j];
+      if (quote === '"' && c === "`") { // escaped char inside double quotes
+        if (j + 1 < src.length) { content += src[j + 1]; j += 2; } else j++;
+        continue;
+      }
+      if (c === quote) {
+        if (src[j + 1] === quote) { content += quote; j += 2; continue; } // doubled quote
+        closed = true;
+        j++;
+        break;
+      }
+      content += c;
+      j++;
+    }
+    // Wrapper detection runs on codeView: an `iex` that came from quoted data
+    // must not make the NEXT quoted argument look like code.
+    if (RE_CODE_WRAPPER_TAIL.test(state.codeView)) {
+      appendView(state, quoteAwareView(content, depth + 1));
+    } else if (quote === '"' && RE_SUBSTITUTION.test(content)) {
+      pushText(state, content, false); // `$()` executes even inside double quotes
+    } else {
+      pushText(state, neutralizeQuotedSeparators(content), true);
+    }
+    i = j - 1;
+    if (!closed) break; // unterminated quote: rest is literal/parse error
+  }
+  return state;
+}
+
+/** Fold real wrappers; a match touching quoted data is text, not a wrapper. */
+function foldWrappers(text, mask) {
+  const re = new RegExp(RE_NESTED_EXEC.source, "gi");
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    const start = m.index;
+    const end = start + m[0].length;
+    let literal = false;
+    for (let k = start; k < end; k++) { if (mask[k]) { literal = true; break; } }
+    if (literal) continue;
+    out += text.slice(last, start) + ";";
+    last = end;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return out + text.slice(last);
+}
 
 export function normalizePwshCommand(raw) {
-  let s = String(raw ?? "");
-  s = s.replace(/[`"']/g, ""); // PS/cmd quoting & escape chars (detection view only)
-  s = s.replace(RE_NESTED_EXEC, ";");
-  return s;
+  const { text, mask } = quoteAwareView(String(raw ?? ""), 0);
+  return foldWrappers(text, mask);
 }
 // checkout/switch to protected — tolerates retargeting prefix args (e.g. `git -C . checkout main`)
 const RE_CHECKOUT_PROTECTED = /git\s+(?:\S+\s+)*?(?:checkout|switch)\s+(?:-\S+\s+)*(?:master|main)\b/i;

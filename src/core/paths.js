@@ -138,4 +138,17 @@ export function extractAbsolutePaths(command) {
   return [...out];
 }
 
+/**
+ * Absolute-path literals inside single/double quotes — keeps spaces that the
+ * token-level extractor truncates (`git -C "F:/repo dir" …`). Quoted text that
+ * merely mentions a path is already treated as a path by the absolute-path net,
+ * so this only sharpens the same lexical heuristic.
+ */
+export function extractQuotedAbsolutePaths(command) {
+  if (typeof command !== "string") return [];
+  const out = new Set();
+  for (const m of command.matchAll(/["']((?:[A-Za-z]:[\\/]|\\\\|\/)[^"']*)["']/g)) out.add(m[1]);
+  return [...out];
+}
+
 export { IS_WIN, dirname };

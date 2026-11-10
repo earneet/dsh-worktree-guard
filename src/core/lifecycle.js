@@ -9,7 +9,7 @@ import {
   worktreeNameOf, git,
 } from "./gitops.js";
 import { norm } from "./paths.js";
-import { writeBinding, deleteBinding, readState, updateState, appendAudit, listBindings } from "./store.js";
+import { writeBinding, deleteBinding, readState, updateState, updateStateIf, appendAudit, listBindings } from "./store.js";
 import { loadSidecar } from "./sidecar.js";
 import { DEFAULT_BRANCH_PREFIX, DEFAULT_WORKTREE_PARENT, STALE_THRESHOLD_MS } from "./constants.js";
 
@@ -30,8 +30,12 @@ async function exists(p) {
  */
 export function bindingStaleness(binding, roots, now = Date.now()) {
   const gone = !roots.has(norm(binding.worktree));
-  const silent = now - Date.parse(binding.resolved_at ?? binding.entered_at ?? 0) > STALE_THRESHOLD_MS;
-  return { gone, silent, stale: gone || silent, reason: gone ? "worktree 已不存在" : "会话静默超阈" };
+  // `resolved_at` is stamped by agent/disposed (C8). `entered_at` alone is NOT
+  // silence: pruning a still-running session's binding would silently degrade
+  // the guard, so age only applies to sessions known to have ended.
+  const silent = typeof binding.resolved_at === "string"
+    && now - Date.parse(binding.resolved_at) > STALE_THRESHOLD_MS;
+  return { gone, silent, stale: gone || silent, reason: gone ? "worktree 已不存在" : "会话已结束且静默超阈" };
 }
 
 /** Sidecar merged over defaults (snake/camel normalized; MAIN-ROOT based — the
@@ -141,7 +145,9 @@ export async function remove({ path, cwd, confirmRemove = false, deleteBranch = 
   if (!found) return { removed: false, message: `不是已注册的 worktree：${target}` };
 
   const branch = found.branch;
-  if ((await isDirtyForLifecycle(target)) && !config.force) {
+  // A prunable entry (directory deleted outside git) has nothing to inspect;
+  // running git inside it throws ENOENT and used to dead-end remove/status.
+  if (!found.prunable && (await exists(target)) && (await isDirtyForLifecycle(target)) && !config.force) {
     return { removed: false, message: "副本有未提交变更：请先提交或 stash（或配置 force）" };
   }
   const base = config.baseRef ?? "HEAD";
@@ -155,12 +161,18 @@ export async function remove({ path, cwd, confirmRemove = false, deleteBranch = 
   for (const b of await listBindings(cd)) {
     if (norm(b.worktree) === norm(target)) await deleteBinding(cd, b.sessionId);
   }
-  await scanAndRemoveAllLinks(target, { skip: [join(target, ".git")] });
-  // Round-7: the isDirtyForLifecycle gate above is the authoritative check —
-  // if it passed, the only possible untracked files are plugin-owned .dsh/
-  // ones, which git's own untracked check would still refuse. Force the
-  // git-level removal; genuinely dirty copies were already refused.
-  await removeWorktree(mainRoot, target, { force: true });
+  if (!found.prunable && (await exists(target))) {
+    await scanAndRemoveAllLinks(target, { skip: [join(target, ".git")] });
+    // Round-7: the isDirtyForLifecycle gate above is the authoritative check —
+    // if it passed, the only possible untracked files are plugin-owned .dsh/
+    // ones, which git's own untracked check would still refuse. Force the
+    // git-level removal; genuinely dirty copies were already refused.
+    await removeWorktree(mainRoot, target, { force: true });
+  } else {
+    // Directory already gone: git worktree remove would fail; recycle the
+    // registration instead so `git worktree list` stops listing it.
+    await git(mainRoot, ["worktree", "prune"]);
+  }
   if (deleteBranch && branch && (await branchExists(mainRoot, branch))) {
     try {
       await deleteMergedBranch(mainRoot, branch);
@@ -178,19 +190,22 @@ export async function status({ cwd, sessionId = null }) {
   const cd = await commonDir(cwd);
   const { mainRoot, entries } = await listWorktrees(cwd);
   const bindings = await listBindings(cd);
-  const roots = new Set(entries.map((e) => norm(e.root)));
+  // A prunable entry is still listed by `git worktree list` after its directory
+  // was deleted outside git; treat it as gone for bindings/staleness (and never
+  // run git inside the missing directory).
+  const roots = new Set(entries.filter((e) => !e.prunable).map((e) => norm(e.root)));
   const now = Date.now();
   const copies = [];
   for (const e of entries) {
     if (norm(e.root) === norm(mainRoot) || e.bare) continue;
     const merged = e.branch ? await isAncestor(mainRoot, e.branch, "HEAD") : false;
-    const dirty = await isDirtyForLifecycle(e.root);
+    const dirty = e.prunable ? null : await isDirtyForLifecycle(e.root).catch(() => null);
     const boundBy = bindings.filter((b) => norm(b.worktree) === norm(e.root));
     const staleSessions = boundBy.filter((b) => bindingStaleness(b, roots, now).stale);
     copies.push({
       name: worktreeNameOf(e.root), root: e.root, branch: e.branch,
       merged_into_head: merged, dirty, bound_sessions: boundBy.length,
-      stale: staleSessions.length > 0,
+      stale: staleSessions.length > 0, prunable: e.prunable,
     });
   }
   // Issue #3: the SAME predicate as prune, so "status says stale" always has a
@@ -248,7 +263,8 @@ export async function prune({ cwd, dryRun = false }) {
   const cd = await commonDir(cwd);
   const bindings = await listBindings(cd);
   const { entries } = await listWorktrees(cwd);
-  const roots = new Set(entries.map((e) => norm(e.root)));
+  // Prunable entries (directory deleted outside git) count as gone.
+  const roots = new Set(entries.filter((e) => !e.prunable).map((e) => norm(e.root)));
   const now = Date.now();
   const dropped = [];
   for (const b of bindings) {
@@ -261,20 +277,21 @@ export async function prune({ cwd, dryRun = false }) {
   // issue #3: last_active is informational (never a binding), so it can outlive
   // its binding. When the path is gone and nothing references it anymore, clear
   // it — otherwise status keeps nagging and prune keeps saying "nothing to
-  // recycle" (the exact loop in the report).
+  // recycle" (the exact loop in the report). The predicate runs inside the
+  // state mutex (updateStateIf) so a concurrent enter cannot be clobbered.
   let cleared_last_active = false;
   if (!dryRun) {
-    const st = await readState(cd);
-    if (st.last_active && !(await exists(st.last_active))) {
+    cleared_last_active = await updateStateIf(cd, async (st) => {
+      if (!st.last_active || (await exists(st.last_active))) return false;
       const remaining = await listBindings(cd);
-      if (!remaining.some((b) => norm(b.worktree) === norm(st.last_active))) {
-        await updateState(cd, { last_active: null });
-        cleared_last_active = true;
-      }
-    }
+      return !remaining.some((b) => norm(b.worktree) === norm(st.last_active));
+    }, { last_active: null });
   }
   if (!dryRun && (dropped.length || cleared_last_active)) {
-    await appendAudit(cd, { type: "prune", dropped, cleared_last_active });
+    // Audit failure must not turn an already-applied prune into an error.
+    try {
+      await appendAudit(cd, { type: "prune", dropped, cleared_last_active });
+    } catch { /* best effort */ }
   }
   return { dropped, dryRun, cleared_last_active };
 }

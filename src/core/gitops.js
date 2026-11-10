@@ -37,9 +37,10 @@ export async function listWorktrees(cwd) {
   for (const line of out.split("\n")) {
     if (line.startsWith("worktree ")) {
       if (cur) entries.push(cur);
-      cur = { root: norm(line.slice(9).trim()), bare: false, detached: false, branch: null };
+      cur = { root: norm(line.slice(9).trim()), bare: false, detached: false, prunable: false, branch: null };
     } else if (cur && line.startsWith("bare")) cur.bare = true;
     else if (cur && line.startsWith("detached")) cur.detached = true;
+    else if (cur && line.startsWith("prunable")) cur.prunable = true; // dir deleted outside git
     else if (cur && line.startsWith("branch ")) cur.branch = line.slice(7).trim().replace(/^refs\/heads\//, "");
   }
   if (cur) entries.push(cur);

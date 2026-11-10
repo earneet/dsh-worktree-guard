@@ -4,7 +4,7 @@
 // path used in human-channel copy, see cli-path.js). All inputs are
 // pre-normalized by the caller (guard.js assembles the runtime context).
 
-import { norm, isUnder, classifyTarget, extractAbsolutePaths } from "./paths.js";
+import { norm, isUnder, classifyTarget, extractAbsolutePaths, extractQuotedAbsolutePaths } from "./paths.js";
 import { matchesMainWhitelist } from "./sidecar.js";
 import { DEFAULT_PROTECTED_BRANCHES as PROTECTED_DEFAULT, DEFAULT_BRANCH_PREFIX } from "./constants.js";
 import { manualOrCliHint } from "./cli-path.js";
@@ -115,10 +115,10 @@ export function readOriginMark(binding) {
 
 // round-8: command-position separators include newline/CR (multiline scripts)
 // and `(` (subexpression `$(...)` / grouping) on top of ; & |.
-const CMD_SEP = "[\\n\\r;&|(]";
+const CMD_SEP = "[\\n\\r;&|({]";
 const RE_PUSH = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+push\\b`, "i");
 const RE_GIT_BRANCH = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+branch\\b`, "i");
-const RE_GIT_C = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+(?:-C\\s+(--\\S+|\\S+)|--git-dir(?:=|\\s+)(\\S+)|--work-tree(?:=|\\s+)(\\S+))`, "i");
+const RE_GIT_C = new RegExp(`(^|${CMD_SEP}\\s*)[gG][iI][tT]\\s+(?:-C\\s+(--\\S+|\\S+)|--git-dir(?:=|\\s+)(\\S+)|--work-tree(?:=|\\s+)(\\S+))`);
 
 // round-8: nested executors (cmd /c, powershell/pwsh -Command, iex) and
 // quote/backtick splices (`git pus""h`, `git pu\`sh`) defeated the command-
@@ -126,11 +126,8 @@ const RE_GIT_C = new RegExp(`(^|${CMD_SEP}\\s*)git\\s+(?:-C\\s+(--\\S+|\\S+)|--g
 // folds the wrapper into a `;` separator and drops quoting/escape chars, so
 // inner commands hit the SAME rules with all their token logic intact.
 // Detection view only: the deny message quotes the RAW command (P3).
-// round-15: bash/sh/zsh/dash -c and eval are the same kind of executor (their
-// argument is CODE); folding them keeps the net closed after quoted-data
-// neutralization below.
 const RE_NESTED_EXEC =
-  /(^|[\s;&|(])(?:cmd(?:\.exe)?\s+\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-c\b|-command\b)|(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c\b)|\b(?:iex|invoke-expression|eval)\b/gi;
+  /(^|[\s;&|({])(?:cmd(?:\.exe)?\s+(?:\/\S+\s+)*\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-\S+\s+)*(?:-c\b|-command\b))|\b(?:iex|invoke-expression)\b/gi;
 
 // ---------- quote-aware detection view (round-15, issue #1 residual) ----------
 // The old seam stripped ALL quote characters before matching, so literal text in
@@ -156,16 +153,52 @@ const RE_NESTED_EXEC =
 const QUOTED_SEP = "\u0001";
 const RE_SUBSTITUTION = /\$\(/;
 const RE_CODE_WRAPPER_TAIL =
-  /(?:^|[\n\r;&|(])\s*(?:cmd(?:\.exe)?\s+\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-c\b|-command\b)|(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c\b|(?:iex|invoke-expression|eval))\s*$/i;
+  /(?:^|[\n\r;&|({])\s*(?:cmd(?:\.exe)?\s+(?:\/\S+\s+)*\/c(?::|\b)|(?:powershell|pwsh)(?:\.exe)?\s+(?:-\S+\s+)*(?:-c\b|-command\b)|(?:iex|invoke-expression))\s*$/i;
+// Language/shell hosts that execute their quoted argument as CODE but are not
+// folded by RE_NESTED_EXEC (`bash -c`, `eval`, `node -e`, `python -c`, …).
+// Their argument is recursed and the scanner prepends a separator, so a bare
+// inner command still lands at a command position. Command-position anchored:
+// `echo bash -c "…"` is an argument, not an execution. Common hosts are covered
+// so the quote-aware view does not silently lose the old detection; exotic
+// interpreters remain a P6 boundary.
+const RE_SCRIPT_HOST_TAIL =
+  /(?:^|[\n\r;&|({])\s*(?:(?:bash|sh|zsh|dash)(?:\.exe)?\s+(?:-\S+\s+)*-\w*c\b|\beval\b|node(?:\.exe)?\s+(?:-\S+\s+)*(?:-e|--eval|-p|--print)|(?:python|python3|py)(?:\.exe)?\s+(?:-\S+\s+)*-c|perl(?:\.exe)?\s+-[eE]|ruby(?:\.exe)?\s+-e|php(?:\.exe)?\s+-r|deno(?:\.exe)?\s+eval|bun(?:\.exe)?\s+-e)\s*$/i;
 
 function neutralizeQuotedSeparators(s) {
-  return s.replace(/[\n\r;&|(]/g, QUOTED_SEP);
+  return s.replace(/[\n\r;&|({]/g, QUOTED_SEP);
 }
 
 function pushText(state, text, literal) {
   state.text += text;
   state.codeView += literal ? QUOTED_SEP.repeat(text.length) : text;
   for (let i = 0; i < text.length; i++) state.mask.push(literal);
+}
+
+/**
+ * Double-quoted PowerShell/bash content: only the `$( … )` regions execute.
+ * Treating the WHOLE string as code (the previous behaviour) over-denied commit
+ * messages that mention a command substitution and a push in the same message.
+ * Unterminated substitutions keep the remaining text as code (fail-closed).
+ */
+function appendSubstitutionSegments(state, content) {
+  let i = 0;
+  for (;;) {
+    const start = content.indexOf("$(", i);
+    if (start === -1) {
+      pushText(state, neutralizeQuotedSeparators(content.slice(i)), true);
+      return;
+    }
+    pushText(state, neutralizeQuotedSeparators(content.slice(i, start)), true);
+    let depth = 0;
+    let j = start + 1; // points at '('
+    for (; j < content.length; j++) {
+      const c = content[j];
+      if (c === "(") depth++;
+      else if (c === ")") { depth--; if (depth === 0) { j++; break; } }
+    }
+    pushText(state, content.slice(start, j), false); // substitution = code
+    i = j;
+  }
 }
 
 /** Append a recursively normalized view, preserving its literal-data mask. */
@@ -181,8 +214,12 @@ function quoteAwareView(src, depth) {
   if (depth > 8) { pushText(state, src, false); return state; }
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
-    if (ch === "`") { // PowerShell escape: keep the escaped character
-      if (i + 1 < src.length) pushText(state, src[++i], false);
+    if (ch === "`") { // PowerShell escape / line continuation
+      const nx = i + 1;
+      if (src[nx] === "\r" && src[nx + 1] === "\n") { pushText(state, " ", false); i = nx + 1; continue; }
+      if (src[nx] === "\n" || src[nx] === "\r") { pushText(state, " ", false); i = nx; continue; }
+      if (nx < src.length) pushText(state, src[nx], false);
+      i = nx;
       continue;
     }
     if (ch !== "'" && ch !== '"') { pushText(state, ch, false); continue; }
@@ -209,8 +246,11 @@ function quoteAwareView(src, depth) {
     // must not make the NEXT quoted argument look like code.
     if (RE_CODE_WRAPPER_TAIL.test(state.codeView)) {
       appendView(state, quoteAwareView(content, depth + 1));
+    } else if (RE_SCRIPT_HOST_TAIL.test(state.codeView)) {
+      pushText(state, ";", false); // script argument: give its first token a command position
+      appendView(state, quoteAwareView(content, depth + 1));
     } else if (quote === '"' && RE_SUBSTITUTION.test(content)) {
-      pushText(state, content, false); // `$()` executes even inside double quotes
+      appendSubstitutionSegments(state, content); // only `$( … )` runs
     } else {
       pushText(state, neutralizeQuotedSeparators(content), true);
     }
@@ -270,16 +310,62 @@ const HUMAN_GATE_BRIEF = `若本会话审批提示被禁用（approval=never）�
 //   - bound sessions (copies) never publish a protected branch;
 //   - protected branches other than the current one;
 //   - --force / --force-with-lease / --force-if-includes / --mirror / --delete /
-//     --all / --prune, short-flag clusters carrying f/d, and `+refspec` pushes;
+//     --all / --prune, server-side command options (--receive-pack/--exec),
+//     short-flag clusters carrying f/d, and `+refspec` pushes;
 //   - wrapper/splice forms are judged on the normalized command (same push).
 // `--dry-run` never transmits a write and is allowed in every state — denying it
 // was the false positive observed live when reproducing issue #1.
-const PUSH_DRY_RUN = /(?:^|\s)(?:--dry-run(?:\s|=|$)|-n(?:\s|$))/i;
-const PUSH_DESTRUCTIVE_LONG = /^(?:--force(?:-with-lease|-if-includes)?|--mirror|--delete|--all|--prune)\b/i;
+const PUSH_DESTRUCTIVE_LONG = /^(?:--force(?:-with-lease|-if-includes)?|--mirror|--delete|--all|--prune|--receive-pack|--exec)\b/i;
+// PowerShell fd duplication (`2>&1`, `>&2`) is NOT a command separator and has
+// no operand token. Masking it before segmenting is essential: splitting on the
+// `&` truncated the segment to " 2>" and made a redirected real push look like
+// a bare implicit push (review finding: `git push 2>&1 origin --delete master`).
+const FD_DUP_REDIRECT = /\d?>&\d+/g;
+const FD_DUP_TOKEN = /^\d?>&\d+$/;
+
+// A `git push` can be hidden behind git global options, a path-qualified
+// executable, or common shell prefixes (`command`, `env`, `time`, `FOO=1`).
+// The push rules run on a canonical view where those are folded away, so the
+// protected-branch net cannot be bypassed by writing `git -C . push …` or
+// `git.exe push …`. Options themselves are fail-closed (see rule 0c): their
+// target directory may be another checkout, so the relaxed policy never applies.
+const RE_GIT_GLOBAL_OPTS = String.raw`(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)(?:=|\s+)\S+\s+|--no-pager\s+|--no-optional-locks\s+|-P\s+|--paginate\s+|--bare\s+|--literal-pathspecs\s+|--glob-pathspecs\s+|--noglob-pathspecs\s+|--icase-pathspecs\s+|--no-replace-objects\s+)`;
+const RE_GIT_OPTS_PUSH = new RegExp(`(^|${CMD_SEP}\\s*)[gG][iI][tT]\\s+(${RE_GIT_GLOBAL_OPTS}+)push\\b`, "g");
+
+/** Canonical push view: fold shell prefixes / `git.exe` / git global options. */
+function pushCommandView(cmd) {
+  let view = cmd;
+  for (let n = 0; n < 4; n++) { // prefix chains: env FOO=1 command git …
+    const before = view;
+    view = view
+      .replace(/(^|[\n\r;&|({])\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+/g, "$1")
+      .replace(/(^|[\n\r;&|({])\s*(?:command|env|time|exec|nohup|nice|sudo|xargs)\s+(?:-\S+\s+)*/gi, "$1");
+    if (view === before) break;
+  }
+  view = view.replace(/(^|[\n\r;&|({])\s*(?:[A-Za-z]:[\\/][^\s;&|]*[\\/])?git(?:\.exe)?(?=\s)/gi, "$1git");
+  let hasOptions = false;
+  view = view.replace(RE_GIT_OPTS_PUSH, (all, pre) => {
+    hasOptions = true;
+    return `${pre}git push`;
+  });
+  return { view, hasOptions, changed: view !== cmd };
+}
+
+/** Is `-n`/`--dry-run` an actual flag (not the value of `-o`/`--push-option`)? */
+function isDryRunSegment(seg) {
+  const raw = seg.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < raw.length; i++) {
+    const tk = raw[i];
+    if (tk === "-o" || tk === "--push-option") { i++; continue; }
+    if (tk === "-n" || tk === "--dry-run") return true;
+  }
+  return false;
+}
 
 /** The part of the command after the matched `git push` up to the next separator. */
 function pushSegmentOf(cmd, mPush) {
-  return cmd.slice(mPush.index + mPush[0].length).split(/[\n\r;&|]/)[0];
+  const tail = cmd.slice(mPush.index + mPush[0].length).replace(FD_DUP_REDIRECT, " ");
+  return tail.split(/[\n\r;&|{]/)[0];
 }
 
 /** Flags and positional tokens of a push segment (redirect tokens dropped). */
@@ -289,7 +375,15 @@ function pushTokenView(seg) {
   const toks = [];
   for (let i = 0; i < raw.length; i++) {
     const tk = raw[i];
-    if (/^[\d&<>]+$/.test(tk)) { i++; continue; } // pure redirect token: skip it and its operand
+    if (FD_DUP_TOKEN.test(tk)) continue; // fd duplication: no operand token
+    if (tk === "-o" || tk === "--push-option") { i++; continue; } // option value is the next token
+    if (tk.startsWith("--push-option=")) continue;
+    if (/^[\d]*[<>]/.test(tk)) {
+      // Attached file redirect (`>out.log`, `2>err.log`, `</dev/null`) — a
+      // standalone `>`/`<` token consumes its operand; an attached one does not.
+      if (/^[\d]*[<>]+$/.test(tk)) i++;
+      continue;
+    }
     if (tk.startsWith("-")) flags.push(tk);
     else toks.push(tk);
   }
@@ -308,10 +402,18 @@ function isDestructivePush(flags, refs) {
   });
 }
 
-/** Destination branch name of one refspec (`src:dst`, `dst`, `+dst`). */
-function pushRefDestination(refspec) {
-  const dst = refspec.split(":").pop().replace(/^\+/, "");
-  return dst.replace(/^refs\/heads\//, "");
+/** Split one refspec into its source/destination branch names (`src:dst`; a
+ *  plain name means the same name on both sides). `refs/heads/` is stripped. */
+function pushRefParts(refspec) {
+  const clean = refspec.replace(/^\+/, "");
+  const idx = clean.indexOf(":");
+  const src = (idx === -1 ? clean : clean.slice(0, idx)).replace(/^refs\/heads\//, "");
+  const dst = (idx === -1 ? clean : clean.slice(idx + 1)).replace(/^refs\/heads\//, "");
+  return { src, dst };
+}
+
+function isCurrentRefName(name, currentBranchName) {
+  return name === currentBranchName || name === "HEAD" || name === "@";
 }
 
 /** Is the session root lexically the main checkout (copies are checked first)? */
@@ -320,15 +422,68 @@ function cwdIsMainCheckout(cwd, ctx) {
   return classifyTarget({ target: norm(cwd), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir }).kind === "main";
 }
 
-/** True when this push publishes the CURRENT branch under its own name. */
-function publishesCurrentBranch({ cmd, mPush, currentBranchName }) {
-  const { flags, toks } = pushTokenView(pushSegmentOf(cmd, mPush));
-  if (isDestructivePush(flags, toks.slice(1))) return false;
-  if (toks.length <= 1) return true; // no refspec: implicit "push current branch"
-  return toks.slice(1).every((r) => {
-    const dst = pushRefDestination(r);
-    return dst === currentBranchName || dst === "HEAD" || dst === "@";
+/** Every `git push` at a command position, as its post-`push` segment. */
+function allPushSegments(cmd) {
+  const re = new RegExp(RE_PUSH.source, "gi");
+  const segs = [];
+  let m;
+  while ((m = re.exec(cmd))) segs.push(pushSegmentOf(cmd, m));
+  return segs;
+}
+
+/** Safe for the relaxed policy: a dry run, or a non-destructive publish that
+ *  does not move a protected ref other than the current branch. */
+function pushSegmentSafe(seg, currentBranchName, prot) {
+  if (isDryRunSegment(seg)) return true;
+  const { flags, toks } = pushTokenView(seg);
+  const refs = toks.slice(1);
+  if (isDestructivePush(flags, refs)) return false;
+  if (refs.length === 0) return true; // implicit current-branch publish
+  return refs.every((r) => {
+    const { src, dst } = pushRefParts(r);
+    // Updating a non-protected ref (tag / other branch) cannot touch the net.
+    if (!prot.includes(dst) && dst !== "HEAD" && dst !== "@") return true;
+    return isCurrentRefName(src, currentBranchName) && isCurrentRefName(dst, currentBranchName);
   });
+}
+
+/** Does this segment push the current branch (implicit, or HEAD/@ destination)? */
+function segmentPushesCurrent(seg, currentBranchName) {
+  const { toks } = pushTokenView(seg);
+  if (/--tags\b/.test(seg) && toks.length <= 1) return false; // --tags alone cannot move a branch
+  const refs = toks.slice(1);
+  const effective = toks.length <= 1 ? (toks[0] ?? "") : refs.join(" ");
+  const implicit = effective === ""
+    || /^[a-z][a-z0-9+.-]*:\/\//i.test(effective)
+    || effective === "origin"
+    || effective === "."
+    || /--all\b|--mirror\b/.test(seg);
+  if (implicit) return true;
+  return refs.some((r) => {
+    const dst = r.replace(/^\+/, "").split(":").pop();
+    return dst === "HEAD" || dst === "@";
+  });
+}
+
+/** Does this segment touch a protected ref (for audit semantics)? */
+function segmentTouchesProtected(seg, prot) {
+  const { toks } = pushTokenView(seg);
+  if (/--tags\b/.test(seg) && toks.length <= 1) return false;
+  const refs = toks.slice(1);
+  if (refs.length === 0) return true; // implicit publish of the current protected branch
+  return refs.some((r) => {
+    const { dst } = pushRefParts(r);
+    return prot.includes(dst) || dst === "HEAD" || dst === "@";
+  });
+}
+
+/** Relaxed publish: unbound main-checkout session + protected CURRENT branch +
+ *  EVERY push in the command is safe. Compound commands can no longer smuggle a
+ *  force/other-branch push behind a safe first one. */
+function canPublishCurrentProtected({ pushSegs, binding, cwd, ctx, currentBranchName, prot }) {
+  if (binding || !currentBranchName || !prot.includes(currentBranchName) || !cwdIsMainCheckout(cwd, ctx)) return false;
+  if (pushSegs.length === 0) return false;
+  return pushSegs.every((seg) => pushSegmentSafe(seg, currentBranchName, prot));
 }
 
 // human-only authorization (P4): fail-closed on the literal verb in EITHER the
@@ -358,7 +513,6 @@ const READ_ONLY_INSPECTOR = /^\s*(?:Get-Content|Get-ChildItem|Get-Item|Select-St
 // execution/writing and must not ride the hatch.
 const INSPECTOR_EXEC_FLAG = /(?:^|\s)(?:--pre(?:-glob)?|--hostname-bin|--open-files-in-pager|--exec(?:=|\s)|--ext-diff|--textconv|--show-signature|--paginate|--output(?:=|\s)|-[A-Za-z]*O\S*)/i;
 const READONLY_CHAIN_SEP = /[\n\r;|&]/;
-const FD_DUP_REDIRECT = /\d?>&\d+/g;
 
 /** True only for a command that is provably a pure inspector chain (see above). */
 export function isReadOnlyDocInspection(rawCmd) {
@@ -423,24 +577,44 @@ export function decidePwsh({ command, currentBranchName, cwd = null, missingPath
     return deny("pwsh", summarizeOf(), "命令触及守卫状态区 / git 元数据 / 守卫模块", "状态由 worktree_* 工具管理；这是防自授硬规则，不可经 shell 绕过。");
   }
   // 1) push mentioning a protected ref (anywhere in the command: errs safe for a lexical net)
-  const mPush = cmd.match(RE_PUSH);
+  const pushViewInfo = pushCommandView(cmd);
+  const pushView = pushViewInfo.view;
+  const mPush = pushView.match(RE_PUSH);
   const protRe = new RegExp(`\\b(?:${prot.map(esc).join("|")})\\b`, "i");
-  // A dry run never updates a remote ref: it is read-only in every state and
-  // denying it was a live false positive while reproducing issue #1.
-  if (mPush && PUSH_DRY_RUN.test(pushSegmentOf(cmd, mPush))) return allow();
-  if (mPush && protRe.test(cmd)) {
-    if (authorized) return allow(); // user-gated grant (TTL)
-    // 0.2.3: the one relaxed case — unbound, rooted at the main checkout, and
-    // pushing the very branch the human is already on. Audited by guard.js.
-    if (!binding && currentBranchName && prot.includes(currentBranchName) && cwdIsMainCheckout(cwd, ctx)
-      && publishesCurrentBranch({ cmd, mPush, currentBranchName })) {
-      return allow({ audit: "allow_protected_push" });
+  // EVERY `git push` in a compound command is evaluated; a safe first segment
+  // must not shadow a real force/delete/other-branch push later in the line.
+  const pushSegs = mPush ? allPushSegments(pushView) : [];
+  // 0c) git global options (`-C`, `-c`, `--git-dir`, `--no-pager`, `git.exe` …)
+  // may retarget another checkout — detect the push, then fail closed.
+  if (mPush && pushViewInfo.hasOptions) {
+    const protectedPush = protRe.test(pushView)
+      || (currentBranchName && prot.includes(currentBranchName) && pushSegs.some((seg) => segmentPushesCurrent(seg, currentBranchName)));
+    if (protectedPush) {
+      return deny("pwsh", summarizeOf(), "push 带 git 全局选项（-C / -c / --git-dir / --no-pager 等），无法静态判定其目标仓库", `请在目标仓库目录直接执行 git push（不要用全局选项改道），或由用户授权/手动推送。${HUMAN_GATE_BRIEF}`);
     }
+  }
+  // 0d) runtime refspec (`$var`, `("mas"+"ter")`, scriptblocks) cannot be
+  // resolved lexically — fail closed instead of letting an expression build a
+  // protected branch name at runtime.
+  if (mPush) {
+    const dynamicPush = pushSegs.some((seg) => {
+      const { flags, toks } = pushTokenView(seg);
+      return toks.slice(1).some((r) => /[$({}`]/.test(r)) || flags.some((f) => /[$({}`]/.test(f));
+    });
+    if (dynamicPush) {
+      return deny("pwsh", summarizeOf(), "push 的 refspec/选项含运行时表达式或变量，无法静态判定目标分支", `请改用字面 refspec（如 origin master），或由用户授权/手动推送。${HUMAN_GATE_BRIEF}`);
+    }
+  }
+  if (mPush && protRe.test(pushView) && authorized) return allow(); // user-gated grant (TTL)
+  const onlyDryRun = pushSegs.length > 0 && pushSegs.every((seg) => isDryRunSegment(seg));
+  const canPublish = canPublishCurrentProtected({ pushSegs, binding, cwd, ctx, currentBranchName, prot });
+  const relaxedPush = onlyDryRun || canPublish;
+  if (mPush && protRe.test(pushView) && !relaxedPush) {
     // round-8/copy review: a push only visible after normalization (quote splice
     // or wrapper) gets its OWN effect-oriented reason — generic text makes the
     // model assume a false positive and retry with another wrapper. Wording
     // names no detection dimension (P6 copy rule: effects, not mechanisms).
-    if (!RE_PUSH.test(rawCmd)) {
+    if (!pushViewInfo.changed && !RE_PUSH.test(rawCmd)) {
       return deny("pwsh", summarizeOf(), "该命令经拼接或包装后仍会将提交推送到受保护分支；包装形式不改变拦截结果", `如确需推送受保护分支，取得用户同意后调用 worktree_authorize_main（TTL 授权后可执行等效 git 命令）。${HUMAN_GATE_BRIEF}`);
     }
     if (binding) {
@@ -461,47 +635,22 @@ export function decidePwsh({ command, currentBranchName, cwd = null, missingPath
     }
   }
   // 2) implicit `git push` while ON a protected branch (zcode lineage).
-  //    round-12 usability fix: only pushes WITHOUT an explicit refspec can move
-  //    the current branch — `git push origin v0.2.0` (a tag) or
-  //    `git push origin worktree-x` cannot touch master and must stay open.
-  //    HEAD/@ refspecs DO resolve to the current branch and stay netted.
+  //    round-12 usability fix: only pushes that can move the current branch are
+  //    netted — `git push origin v0.2.0` (a tag) or `git push origin worktree-x`
+  //    cannot touch master and must stay open. HEAD/@ destinations still net.
   if (mPush && currentBranchName && prot.includes(currentBranchName)) {
-    const segRaw = pushSegmentOf(cmd, mPush);
-    // strip git flags AND PowerShell redirection (`2>&1`, `> out.log`) — a stray
-    // redirect was parsed as a refspec and un-netted a bare push (R12-3).
-    const raw = segRaw.split(/\s+/).filter(Boolean);
-    const toks = [];
-    for (let i = 0; i < raw.length; i++) {
-      const tk = raw[i];
-      if (/^[\d&<>]+$/.test(tk)) { i++; continue; } // pure redirect token: skip it and its operand
-      if (tk.startsWith("-")) continue;
-      toks.push(tk);
-    }
-    const effective = toks.length <= 1 ? (toks[0] ?? "") : toks.slice(1).join(" "); // [0]=remote
-    const tagsOnly = /--tags\b/.test(segRaw) && toks.length <= 1; // --tags alone cannot move a branch
-    const implicit = !tagsOnly && (effective === "" || /^[a-z][a-z0-9+.-]*:\/\//i.test(effective) || effective === "origin" || effective === "." || /--all\b|--mirror\b/.test(segRaw));
-    // HEAD as the DESTINATION resolves to the current (protected) branch; HEAD as
-    // a mere source (`HEAD:worktree-x`) updates another branch and is safe.
-    const dstMovesCurrent = toks.slice(1).some((tk) => {
-      const dst = tk.includes(":") ? tk.split(":").pop() : tk;
-      return dst === "HEAD" || dst === "@";
-    });
-    const pushesCurrent = implicit || dstMovesCurrent;
-    if (!authorized && pushesCurrent) {
-      // 0.2.3 (issue #1): bare `git push` from an unbound main-checkout session
-      // publishes the current protected branch — allow with audit unless the
-      // command carries destructive options.
-      if (!binding && cwdIsMainCheckout(cwd, ctx)) {
-        const { flags, toks: positional } = pushTokenView(segRaw);
-        if (!isDestructivePush(flags, positional.slice(1))) return allow({ audit: "allow_protected_push" });
-      }
+    const pushesCurrent = pushSegs.some((seg) => segmentPushesCurrent(seg, currentBranchName));
+    if (!authorized && !relaxedPush && pushesCurrent) {
       return deny("pwsh", summarizeOf(), `当前处于受保护分支 ${currentBranchName}，该 push 会推送主干`, `裸 push/HEAD 推送受保护分支只在"未绑定且根在主 checkout"时放行；破坏性选项仍被拦截，其他情况请指定显式 refspec 或由用户授权。${HUMAN_GATE_BRIEF}`);
     }
   }
   // 3) any `git branch` command touching a worktree branch token — decoy-first
   //    multi-branch deletes (`git branch -d decoy worktree-x`) and equals-form
-  //    flags all fall out of token scanning (round-2 fix).
-  if (RE_GIT_BRANCH.test(cmd)) {
+  //    flags all fall out of token scanning (round-2 fix). Read-only queries
+  //    (`--list`, `--contains`, …) are not lifecycle mutations and stay open.
+  const readOnlyBranchQuery = /(?:^|\s)(?:--list|-l|--contains|--merged|--no-merged|--show-current|--points-at)(?=\s|$)/i.test(cmd)
+    && !/(?:^|\s)-[dDmMcC]\b/.test(cmd);
+  if (RE_GIT_BRANCH.test(cmd) && !readOnlyBranchQuery) {
     const tokens = cmd.split(/[\s;&|]+/).map((t) => t.replace(/^[*+]/, ""));
     if (tokens.some((t) => worktreeBranchToken(t))) {
       return deny("pwsh", summarizeOf(), "git branch 命令涉及 worktree 分支", "worktree 分支的创建/删除由 worktree_* 工具统一管理（仅删已合并分支）。");
@@ -513,10 +662,18 @@ export function decidePwsh({ command, currentBranchName, cwd = null, missingPath
   const mC = RE_GIT_C.exec(cmd);
   if (mC) {
     const target = mC[2] ?? mC[3] ?? mC[4];
+    // A relative / --git-dir target that is gone gets the same GONE diagnostic
+    // as an absolute one (issue #2: `git -C .worktrees/gone` used to be allowed).
+    if (typeof target === "string" && !target.startsWith("--")) {
+      const absTarget = norm(target, cwd || ctx.mainRoot);
+      if (absTarget && missingPaths?.has(absTarget)) {
+        return deny("pwsh", summarizeOf(), "git 定向参数指向一个已不存在的路径", `该路径可能曾是 worktree 副本且已被清理（${clipPath(absTarget)}）；先调用 worktree_status 盘点绑定，必要时 worktree_prune 回收过期绑定，请勿再引用该路径。`);
+      }
+    }
     if (binding && typeof target === "string" && !target.startsWith("--") && /(^|[\\/])\.\.([\\/]|$)/.test(target)) {
       return deny("pwsh", summarizeOf(), "git 定向参数以 .. 逃出副本", `本会话绑定副本 ${binding.worktree}；请在副本目录内直接执行 git 命令。`);
     }
-    for (const p of extractAbsolutePaths(cmd.slice(mC.index))) {
+    for (const p of pathCandidates(rawCmd, cmd, mC.index)) {
       const cls = classifyTarget({ target: norm(p), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
       // issue #2: a deleted copy root is lexically inside mainRoot but is not a
       // registered worktree anymore, so classifyTarget calls it "main". Say the
@@ -536,14 +693,19 @@ export function decidePwsh({ command, currentBranchName, cwd = null, missingPath
   }
   // 6) residual absolute paths into main / git-meta while bound (lexical net; last resort)
   if (binding) {
-    for (const p of extractAbsolutePaths(cmd)) {
+    for (const p of pathCandidates(rawCmd, cmd, 0)) {
       const cls = classifyTarget({ target: norm(p), mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
       if (cls.kind === "main" || cls.kind === "git-meta") {
         return deny("pwsh", summarizeOf(), `命令包含${cls.kind === "main" ? "主 checkout " : ".git 元数据 "}绝对路径`, `本会话绑定副本 ${binding.worktree}；请改用解析到本副本内的路径（cwd 已是副本），或用 write/edit 工具写文件。`);
       }
     }
   }
-  return allow();
+  // The relaxed push path reaches this point only after rules 1b–6 also ran, so
+  // a compound command cannot hide a branch delete / retarget / checkout behind
+  // a safe push. Audit only when a real (non-dry-run) push touched a protected
+  // ref — a plain push of an unprotected feature branch is not a deviation.
+  const auditPush = canPublish && !onlyDryRun && pushSegs.some((seg) => segmentTouchesProtected(seg, prot));
+  return auditPush ? allow({ audit: "allow_protected_push" }) : allow();
 }
 
 // ---------- shared ----------
@@ -558,13 +720,29 @@ function clipPath(p) {
 }
 
 /**
+ * Absolute-path candidates for one command: the token-level extractor plus the
+ * full quoted literals. A token-level match that was truncated at a space inside
+ * a quoted path (`git -C "F:/repo dir"` → `F:/repo`) is dropped when a quoted
+ * literal continues it, so the complete path decides the domain.
+ */
+function pathCandidates(rawCmd, cmd, fromIndex) {
+  const quoted = extractQuotedAbsolutePaths(rawCmd);
+  const quotedNorm = quoted.map((q) => norm(q));
+  const plain = extractAbsolutePaths(cmd.slice(fromIndex)).filter((p) => {
+    const np = norm(p);
+    return !quotedNorm.some((qp) => qp.length > np.length && qp.startsWith(np) && /[\/\\ ]/.test(qp[np.length]));
+  });
+  return [...plain, ...quoted];
+}
+
+/**
  * Raw targets of `git -C` / `--git-dir` / `--work-tree` options (issue #2).
  * Lexical only; the caller resolves them and feeds `missingPaths` so this
  * module keeps its no-fs contract.
  */
 export function extractGitRetargets(command) {
   const out = [];
-  const re = new RegExp(RE_GIT_C.source, "gi");
+  const re = new RegExp(RE_GIT_C.source, "g");
   let m;
   while ((m = re.exec(command))) {
     const t = m[2] ?? m[3] ?? m[4];
@@ -592,3 +770,4 @@ function esc(s) {
 }
 
 export { PROTECTED_DEFAULT };
+

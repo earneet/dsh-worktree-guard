@@ -11,7 +11,7 @@
 import { decideWrite, decideRead, decidePwsh, makeContext, extractGitRetargets } from "./core/decision.js";
 import { resolveBinding } from "./core/binding.js";
 import { commonDir as gitCommonDirOf, listWorktrees, currentBranch, worktreeNameOf } from "./core/gitops.js";
-import { norm, physicalAncestorKey, classifyTarget, extractAbsolutePaths } from "./core/paths.js";
+import { norm, physicalAncestorKey, classifyTarget, extractAbsolutePaths, extractQuotedAbsolutePaths, isUnder } from "./core/paths.js";
 import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/store.js";
 import { loadSidecar } from "./core/sidecar.js";
 import { GUARD_CTX_TTL_MS, DEFAULT_PROTECTED_BRANCHES } from "./core/constants.js";
@@ -185,18 +185,22 @@ async function sandboxDenied(binding, opts, header) {
  * Paths referenced by a shell command that do NOT exist (issue #2). The
  * decision tables stay fs-free; this probe only sharpens deny copy (a missing
  * copy path is not "the main checkout"), so a stat failure must never change
- * allow/deny by itself.
+ * allow/deny by itself. Only repo-local paths matter (rule 4's "main" branch),
+ * which also bounds the fs probes to the checkout instead of touching arbitrary
+ * network paths that merely appear in an argument.
  */
-async function missingPathSet(command, cwd) {
+async function missingPathSet(command, cwd, mainRoot) {
   if (typeof command !== "string") return new Set();
+  const root = norm(mainRoot);
   const candidates = new Set(extractAbsolutePaths(command));
+  for (const p of extractQuotedAbsolutePaths(command)) candidates.add(p);
   for (const t of extractGitRetargets(command)) {
     try { candidates.add(norm(t, cwd)); } catch { /* lexical fallback below */ }
   }
   const missing = new Set();
   for (const p of candidates) {
     const abs = norm(p);
-    if (!abs) continue;
+    if (!abs || !isUnder(abs, root)) continue;
     try { await access(abs); } catch { missing.add(abs); }
   }
   return missing;
@@ -327,7 +331,7 @@ export async function decideToolCall(exec, opts = {}) {
       const branchNow = await currentBranch(cwd).catch(() => null);
       // issue #2: existence is probed here (guard), never inside the pure
       // decision tables, and only feeds deny copy.
-      const missingPaths = await missingPathSet(args.command, cwd).catch(() => new Set());
+      const missingPaths = await missingPathSet(args.command, cwd, ctx.mainRoot).catch(() => new Set());
       d = decidePwsh({ command: args.command, currentBranchName: branchNow, cwd, missingPaths }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
     } catch (err) {
       // a broken net must not brick the session: fail-open + audit (§11)

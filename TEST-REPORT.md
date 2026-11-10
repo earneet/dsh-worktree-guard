@@ -1,6 +1,6 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-11-09 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-15 后全量 185/185）**
+日期：2026-11-10 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-16 后全量 207/207）**
 
 ## issue #1/#2/#3 修复轮（round-14，2026-11-09）
 
@@ -10,7 +10,7 @@
 - **issue #2（已删除副本误判为 main）**：`git -C`/`--git-dir`/`--work-tree` 目标不存在且词法落在 mainRoot 内时，guard 侧用 fs 探测出 `missingPaths` 传给纯决策层；deny 改为"路径当前不存在，可能曾是副本且已被清理"，下一步指向 `worktree_status`/`worktree_prune`，不再让用户 cd 进不存在目录。
 - **issue #3（status/prune 判定不一致）**：抽出唯一过期谓词 `bindingStaleness`（副本不在 `git worktree list` 或静默超阈），status 新增 `stale_bindings` 列表并给出 `worktree_prune` 动作（删除"调 worktree_status"自指文案）；prune 非 dry-run 时同时清理指向已消失路径的 `state.json.last_active`，即使已无可回收绑定也能终止旧提示循环。
 - **测试基础设施**：Windows Git for Windows 系统配置默认 `core.fsmonitor=true`，全量套件并发创建临时 worktree 时会卡死在 `git reset --hard` / `git add`（本次实测）。新增 `scripts/run-tests.mjs` 仅为测试子进程设置 `GIT_CONFIG_KEY_0=core.fsmonitor=false`（不改用户配置），`npm test` 稳定跑完。
-- **测试**：新增 [test/round14-issues.test.js](test/round14-issues.test.js)（13 项：push 放行/审计、绑定与破坏性仍拦、dry-run、无 cwd 默认不变、已删副本文案、status/prune 收敛与 last_active 清理）；更新 G9 与 R13-F2/F3 以匹配新策略。全量 `npm test` → **176/176 pass**（round-14 前 163）；`npm run verify:package` 通过。
+- **测试**：新增 [test/round14-issues.test.js](test/round14-issues.test.js)（18 项：push 放行/审计、绑定与破坏性仍拦、dry-run、无 cwd 默认不变、已删副本文案、status/prune 收敛与 last_active 清理）；更新 G9 与 R13-F2/F3 以匹配新策略。全量 `npm test` → **181/181 pass**（round-14 前 163）；`npm run verify:package` 通过。
 
 ## 引号内文本误报修复轮（round-15，issue #1 残余）
 
@@ -18,7 +18,16 @@ round-14 的现场提交过程中又暴露同一类误报：`git commit -m "(git
 
 - **检测视图改为引号感知（行为，高）**：普通引号字符串内的分隔符替换为非分隔符占位符，字符串其余内容保留（参数级规则继续看见 `git push origin "master"`、`git branch -d "worktree-x"` 等）。引号参数属于执行包装器时按**代码**递归归一化：`cmd /c`、`pwsh/powershell -c|-Command`、`iex`、`eval`，并补齐 `bash/sh/zsh/dash -c`（否则引号内分隔符中性化会让这些包装器漏检）。双引号内含 `$(` 时保留分隔符（命令替换仍会执行，fail-closed）。写入/折叠包装器时用 literal-data mask 阻止"提交信息里长得像包装器的文本"被折叠成命令位。
 - **有意不放宽的两条边界（P6/P4）**：`authorize-main` 字面动词仍然对**原始文本** fail-closed——`node wt.js "authorize-main"` 是真实 argv（引号里的子命令会被执行），而 CLI 的 TTY+随机码仍是最后屏障；`git "checkout" main` 同理不被"引号=数据"放过，宽松 checkout 规则保持不变。这两类"引号里的真实 argv"与"提交信息里的文本"在纯词法层无法安全区分，故不扩大改动。
-- **测试**：新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（9 项：括号/分号/`&&`/多行提交信息与宿主输出放行；`$()` 替换、独立括号、`cmd /c`/`bash -c`/`sh -c`/`pwsh -Command`/`iex`/`eval` 包装、多行脚本、引号拼接仍 deny；带引号的 refspec/分支名/checkout 参数检测不回退）。全量 `npm test` → **185/185 pass**；`npm run verify:package` 通过。
+- **测试**：新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（11 项：括号/分号/`&&`/多行提交信息与宿主输出放行；`$()` 替换、独立括号、`cmd /c`/`bash -c`/`sh -c`/`pwsh -Command`/`iex`/`eval` 包装、多行脚本、引号拼接仍 deny；带引号的 refspec/分支名/checkout 参数检测不回退）。全量 `npm test` → **192/192 pass**；`npm run verify:package` 通过。
+
+## 独立审查修复轮（round-16，2026-11-10）
+
+对两笔待发布提交做了三路只读对抗审查（decision 安全面、guard/lifecycle 集成面、测试/文档/工程面），按发现逐条修复：
+
+- **Critical：push 网整体绕过与复合命令**——`git -C . push origin master`、`git.exe push`、`git --no-pager push`、`command/env/time/FOO=1 git push` 等前缀完全绕过 `RE_PUSH`；复合命令/`2>&1` 截断/`-o -n`/反引号续行可让真实 force/delete push 搭上 safe 首段的便车。现：push 规则跑在规范化视图上（shell 前缀、`git.exe`、git 全局选项折叠），带全局选项的受保护 push fail-closed；`allPushSegments` 逐段校验（dry-run 只读、src/dst 都需解析到当前分支、非破坏性），`2>&1` 先掩码再切段，`-o` 的值不当作 flag，backtick+换行按续行折叠，运行时拼接/变量 refspec fail-closed。
+- **High：外部删除副本（prunable）**——`rm -rf` 副本后 `git worktree list` 仍列出 prunable，status 在缺失目录跑 git 抛 ENOENT、prune 不回收。现解析 `prunable`，status 不进入缺失目录、prune/remove 走 `git worktree prune` 回收。
+- **Medium**：活会话不再因 `entered_at` 超阈被 prune（静默只对已 `resolved_at` 的会话生效）；session-start 过期提示改用 `updated_at`（旧实现 `Date.parse(path)` 恒 NaN，提示从未触发）；prune 审计写失败不再把已生效回收报成错误；`last_active` 清理移入 state 互斥（`updateStateIf` CAS，避免并发 enter 被覆盖）；带空格引号路径完整判域；`git -c` 不再被当成 `git -C`；只读 `git branch --list/--contains` 放行。
+- **测试/工程**：新增 [test/round16-review.test.js](test/round16-review.test.js)（15 项）；`scripts/run-tests.mjs` 自行展开 glob（Node 20 兼容），并保留 fsmonitor 关闭；`.gitignore` 忽略本地 `.dsh/` 工具记忆；TEST-REPORT 引用更新。全量 `npm test` → **207/207 pass**；`npm run verify:package` 通过。
 
 ## 审批禁用会话修复轮（round-13，issue #1 驱动）
 
@@ -83,16 +92,17 @@ GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell �
 | 3. CLI 端到端（真实临时仓库，wt.js 全命令） | 新增 [test/e2e-cli-run.ps1](test/e2e-cli-run.ps1)（23 项） | ✅ 23/23 |
 | 4. 迭代回归（round-7） | 新增 [test/round7-iterations.test.js](test/round7-iterations.test.js)（3 项） | ✅ 3/3 |
 | 5. 加固回归（round-8） | 新增 [test/round8-hardening.test.js](test/round8-hardening.test.js)（17 项） | ✅ 17/17 |
-| 6. issue 修复回归（round-14） | 新增 [test/round14-issues.test.js](test/round14-issues.test.js)（13 项） | ✅ 13/13 |
-| 7. 引号文本回归（round-15） | 新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（9 项） | ✅ 9/9 |
+| 6. issue 修复回归（round-14） | 新增 [test/round14-issues.test.js](test/round14-issues.test.js)（18 项） | ✅ 18/18 |
+| 7. 引号文本回归（round-15） | 新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（11 项） | ✅ 11/11 |
+| 8. 审查修复回归（round-16） | 新增 [test/round16-review.test.js](test/round16-review.test.js)（15 项） | ✅ 15/15 |
 
-全量回归：`npm test` → **185/185 pass**（round-7/8/13/14/15 已并入套件）。
+全量回归：`npm test` → **207/207 pass**（round-7/8/13/14/15/16 已并入套件）。
 
 ## 守卫网覆盖（G 系列，经 decideToolCall 实测）
 
 - **写域**：相对路径写本副本 allow；空路径/跨副本/`.git` 元数据/状态区 deny；**junction 指向主 checkout 的写入被物理身份识别并 deny**（G5）。
 - **读域**：warn 模式读主 checkout → allow + 溯源标记（经 `takePendingMark` 按 callId 取走且一次性）；grep 搜索主根同样标记；sidecar `read_policy:"strict"` → deny。
-- **shell 词法网**：push 受保护分支 deny / push 本分支 allow；主根裸 push deny；`git branch` 涉 worktree 分支 deny（诱饵多分支亦命中）；`git -C` 绝对路径定向主根 deny；绑定态 `checkout main` deny；shell 内 `authorize-main` 动词 deny（人工通道保护）；`Set-Content ../../.git/worktree-guard/...` deny；import 守卫模块 deny；日常命令（npm/Get-ChildItem/引用 store.js 的普通参数）无误报。
+- **shell 词法网**：push 受保护分支 deny / push 本分支 allow；主根裸 push 按 0.2.3 策略（未绑定主 checkout 推当前受保护分支 allow+审计，否则 deny）；`git branch` 涉 worktree 分支 deny（诱饵多分支亦命中）；`git -C` 绝对路径定向主根 deny；绑定态 `checkout main` deny；shell 内 `authorize-main` 动词 deny（人工通道保护）；`Set-Content ../../.git/worktree-guard/...` deny；import 守卫模块 deny；日常命令（npm/Get-ChildItem/引用 store.js 的普通参数）无误报。
 - **C9 沙箱链路**：绑定 + `danger-full-access` → 非生命周期工具 deny、`worktree_*` 豁免（逃生门不被自锁）。
 - **授权治理**：TTL 有效期内写主 checkout + push 放行，过期后自动收回（G18）；sidecar `main_write_whitelist` glob 放行。
 
@@ -116,3 +126,4 @@ help / create（含 task-brief 与 skill 写入）/ status（unbound→rooted→
 ## 结论
 
 三层实测（决策核心、插件装配、CLI 人机面）+ 迭代回归全部通过；测试报告中的三项发现均已在 round-7 迭代中处理。测试资产已入库：`test/e2e-guard-live.test.js`、`test/round7-iterations.test.js`（并入 `npm test`）、`test/e2e-cli-run.ps1`（手动 E2E，PowerShell）。
+

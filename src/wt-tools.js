@@ -196,7 +196,7 @@ export function toolSpecs(helpers) {
               : []),
             ...(v.stale_state_hint ? [`提示：state.json 的 last_active 指向已不存在的路径（${v.stale_state_hint}）：调 worktree_prune 清理该信息性记录。`] : []),
             ...v.copies.map((c) =>
-              ` - ${c.name} [${c.branch ?? "?"}] ${c.merged_into_head ? "已合并(证明)" : "未合并"}${c.dirty ? " 有未提交变更" : ""}${c.stale ? " ⚠️stale绑定" : ""}`),
+              ` - ${c.name} [${c.branch ?? "?"}] ${c.merged_into_head ? "已合并(证明)" : "未合并"}${c.dirty ? " 有未提交变更" : ""}${c.prunable ? " ⚠️目录已不存在(prunable)" : ""}${c.stale ? " ⚠️stale绑定" : ""}`),
           ];
           return blocks(lines.join("\n"));
         },

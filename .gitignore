@@ -1,2 +1,5 @@
 node_modules/
 *.tmp-*
+# local tooling memory (grill-first / DSH config space); user sidecar config is
+# user-owned and must never be committed
+.dsh/

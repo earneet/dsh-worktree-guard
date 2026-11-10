@@ -70,6 +70,7 @@ test("R14-P4 破坏性 push 仍 deny（force/lease/delete/all/mirror/+refspec）
     "git push --all",
     "git push --mirror",
     "git push origin +master",
+    "git push --receive-pack=evil origin master",
   ]) {
     assert.equal(decidePwsh({ ...onMain, command: cmd }, ctx, null, {}).kind, "deny", cmd);
   }
@@ -79,11 +80,84 @@ test("R14-P5 非当前分支 / 根不在主 checkout / 未绑定副本 -> deny",
   assert.match(decidePwsh({ ...onMain, command: "git push origin main" }, ctx, null, {}).reason, /当前不在该分支|不是当前分支/);
   assert.equal(decidePwsh({ ...onMain, currentBranchName: "feature-x", command: "git push origin master" }, ctx, null, {}).kind, "deny");
   assert.equal(decidePwsh({ ...onMain, cwd: WT_A, command: "git push origin master" }, ctx, null, {}).kind, "deny");
+  // destination is the current branch but the SOURCE is another branch: this
+  // rewrites the protected remote ref from elsewhere and must not be relaxed.
+  assert.equal(decidePwsh({ ...onMain, command: "git push origin other:master" }, ctx, null, {}).kind, "deny");
+  assert.equal(decidePwsh({ ...onMain, command: "git push origin refs/heads/other:refs/heads/master" }, ctx, null, {}).kind, "deny");
+  assert.equal(decidePwsh({ ...onMain, command: "git push origin other:HEAD" }, ctx, null, {}).kind, "deny");
+});
+
+test("R14-P5b 源与目标都解析到当前分支 -> allow（HEAD/@/refs 形式）", () => {
+  for (const cmd of [
+    "git push origin @:master",
+    "git push origin HEAD:refs/heads/master",
+    "git push origin refs/heads/master:refs/heads/master",
+    "git push origin master",
+  ]) {
+    const d = decidePwsh({ ...onMain, command: cmd }, ctx, null, {});
+    assert.equal(d.kind, "allow", cmd);
+    assert.equal(d.audit, "allow_protected_push", cmd);
+  }
+});
+
+test("R14-P5c 推非受保护分支不产生保护审计", () => {
+  const d = decidePwsh({ ...onMain, command: "git push origin feature-x" }, ctx, null, {});
+  assert.equal(d.kind, "allow");
+  assert.equal(d.audit, undefined);
 });
 
 test("R14-P6 未提供 cwd 时默认行为不变（仍 deny）", () => {
   assert.equal(decidePwsh({ command: "git push origin master", currentBranchName: "master" }, ctx, null, {}).kind, "deny");
   assert.equal(decidePwsh({ command: "git push", currentBranchName: "master" }, ctx, null, {}).kind, "deny");
+});
+
+test("R14-P7 复合命令：每一段 push 都必须安全，安全首段不得遮蔽后续真实 push", () => {
+  for (const cmd of [
+    "git push origin master; git push --dry-run origin master",
+    "git push --dry-run; git push origin master",
+    "git push origin master; git push origin feature-x",
+  ]) {
+    const d = decidePwsh({ ...onMain, command: cmd }, ctx, null, {});
+    assert.equal(d.kind, "allow", cmd);
+    assert.equal(d.audit, "allow_protected_push", cmd);
+  }
+  for (const cmd of [
+    "git push origin master; git push -f origin master",
+    "git push origin master && git push --delete origin master",
+    "git push --dry-run origin master && git push --delete origin master",
+    "git push; git push -f origin master",
+    "git push origin master; git branch -D worktree-beta",
+  ]) {
+    assert.equal(decidePwsh({ ...onMain, command: cmd }, ctx, null, {}).kind, "deny", cmd);
+  }
+});
+
+test("R14-P8 绑定会话的干跑前缀不能为后续真实 push 开路", () => {
+  for (const cmd of [
+    "git push --dry-run origin master; git push origin master",
+    "git push -n; git push -f origin master",
+    'echo x; "git push --dry-run"; git push origin master',
+  ]) {
+    assert.equal(decidePwsh({ ...onMain, cwd: WT_A, command: cmd }, ctx, bound, {}).kind, "deny", cmd);
+  }
+});
+
+test("R14-P9 fd 复制重定向（2>&1）不得截断 push 段或吃掉 remote", () => {
+  for (const cmd of [
+    "git push 2>&1 origin --delete master",
+    "git push 2>&1 origin +master",
+    "git push 2>&1 origin feature:master",
+    "git push -f 2>&1 origin master",
+    "git push 2>&1 origin --all",
+  ]) {
+    assert.equal(decidePwsh({ ...onMain, command: cmd }, ctx, null, {}).kind, "deny", cmd);
+  }
+  for (const cmd of ["git push 2>&1 origin master", "git push origin master 2>&1"]) {
+    const d = decidePwsh({ ...onMain, command: cmd }, ctx, null, {});
+    assert.equal(d.kind, "allow", cmd);
+    assert.equal(d.audit, "allow_protected_push", cmd);
+  }
+  assert.equal(decidePwsh({ ...onMain, cwd: WT_A, command: "git push 2>&1 origin master" }, ctx, bound, {}).kind, "deny");
 });
 
 // ---------- issue #2: deleted copy path is reported as GONE ----------

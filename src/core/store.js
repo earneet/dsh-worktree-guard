@@ -89,6 +89,23 @@ export function updateState(commonDir, patch) {
   });
 }
 
+/**
+ * Serialized conditional update. The predicate runs INSIDE the per-repo mutex,
+ * so a read-check-clear cannot clobber a value written concurrently (prune's
+ * last_active cleanup used to read state outside the mutex).
+ */
+export function updateStateIf(commonDir, predicate, patch) {
+  return serialized(commonDir, async () => {
+    const s = await readState(commonDir);
+    if (!(await predicate(s))) return false;
+    await atomicWrite(
+      join(stateRoot(commonDir), "state.json"),
+      JSON.stringify({ ...s, ...patch, updated_at: new Date().toISOString() }, null, 2),
+    );
+    return true;
+  });
+}
+
 // ---- allowlist (per-path TTL grants; model-facing write of this file is denied by guard) ----
 
 const DANGEROUS_PATTERNS = [/^\/$/, /^\.git$/i, /^\.git\//i, /^\*$/, /^%/, /\.\./, /^\.$/];

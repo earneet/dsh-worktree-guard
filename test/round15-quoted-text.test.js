@@ -79,10 +79,33 @@ test("R15-E3 包装器的引号参数是代码：cmd /c、bash -c、pwsh -Comman
   }
 });
 
-test("R15-E4 多行脚本 / 引号拼接仍 deny", () => {
+test("R15-E4 多行脚本 / 分段 / 引号拼接仍 deny", () => {
   assert.equal(pw("npm run build\ngit push origin master").kind, "deny");
+  assert.equal(pw('git commit -m "x" && git push origin master').kind, "deny");
+  assert.equal(pw('git commit -m "x"; git push origin master').kind, "deny");
   assert.equal(pw('git pus""h origin master').kind, "deny");
   assert.equal(pw("git pu`sh origin master").kind, "deny");
+});
+
+test("R15-E6 脚本宿主的引号参数按代码检测（不回退旧检测面）", () => {
+  for (const cmd of [
+    'node -e "git push origin master"',
+    'node --no-warnings -e "git push origin master"',
+    "python -c \"import os; os.system('git push origin master')\"",
+    "perl -e 'system(\"git push origin master\")'",
+    "ruby -e 'system(\"git push origin master\")'",
+    "php -r 'system(\"git push origin master\");'",
+  ]) {
+    assert.equal(pw(cmd).kind, "deny", cmd);
+  }
+  assert.equal(pw('node -e "console.log(1)"').kind, "allow");
+});
+
+test("R15-E7 引号数据里的脚本宿主字样不被误判", () => {
+  assert.equal(pw("git commit -m \"node -e 'git push origin master'\"").kind, "allow");
+  assert.equal(pw("git commit -m \"bash -c 'git push origin master'\"").kind, "allow");
+  assert.equal(pw('echo node -e "git push origin master"').kind, "allow");
+  assert.equal(pw('echo eval "git push origin master"').kind, "allow");
 });
 
 test("R15-E5 参数级检测不回退：带引号的 refspec / 分支名仍生效", () => {

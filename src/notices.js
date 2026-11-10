@@ -39,9 +39,11 @@ export async function sessionStartText({ cwd, sessionId, parentSession = null })
   }
   if (!binding) {
     const st = await readState(cd);
-    const last = st?.last_active ? Date.parse(st.last_active) : NaN;
+    // updated_at is an ISO timestamp; last_active is a PATH (Date.parse(path)
+    // was always NaN, so this hint never fired since v0.1).
+    const last = st?.updated_at ? Date.parse(st.updated_at) : NaN;
     // informational only if the last copy activity is stale, not merely recent
-    if (Number.isFinite(last) && Date.now() - last > STALE_THRESHOLD_MS) {
+    if (st?.last_active && Number.isFinite(last) && Date.now() - last > STALE_THRESHOLD_MS) {
       return `${PREFIX} 上会话副本长期未收尾（${st.last_active}）：调 worktree_status 盘点绑定；过期记录随后用 worktree_prune 回收。`;
     }
   }

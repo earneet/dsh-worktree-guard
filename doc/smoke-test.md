@@ -77,24 +77,32 @@ profile 依赖从 registry 版本号改为**本地 tarball 的 `file:` 安装**�
 
 首轮 35/39：4 个失败全部是**冒烟脚本自身断言错误**，非产品缺陷——S1.4b/c 用未归一化路径做全等比较（win32 盘符大小写）；S0.3 假设 schemastery Schema 有 `.validate`（实为可调用函数 + `.meta`）；S0.4 猜错依赖入口文件名（实为 `lib/index.cjs`，正确做法是按 `index.js` 的解析规则 `require.resolve`）。已修正并复跑通过。教训与 issue #5 同源：**测试代码对被测对象的假设也必须被验证**。
 
-## T3 活体冒烟清单（宿主重启后人工执行）
+## T3 活体冒烟（2026-11-11 17:52–18:10，宿主重启后执行，loaded=重启时快照）
 
-宿主进程在启动时加载插件；**本会话宿主仍是旧构建**，以下用例在重启 DSH 后的新会话里执行，逐条打勾：
+| # | 操作 | 预期 | 结果 |
+|---|---|---|---|
+| L1 | 重启后查工具注册（cordis inspect） | 9 个 worktree_* 全注册，描述为 0.2.4 文本 | ✅ |
+| L2 | `worktree_create{task_name:"live-smoke"}` | 成功 + 采用优先指引 | ⚠️ **活体抓到 bug-1**：宿主校验 execute 返回值，schema 未声明 `isolation/next_steps/summary` → 工具调用被打回（副本已建、副作用已发生）。已修复（7831010），工具层复验待下次重启；lifecycle 层当轮已验证 |
+| L3 | `worktree_enter{path}` | bound+adopted | ⚠️ **bug-2 同类**：refused/adopted 形状的 `diagnosis/session_root` 未声明（活体 enter{Z:\no-such-copy} 打回）。已修复；lifecycle 层当轮经 rig 绑定验证 |
+| L4 | 采用后 write 副本内绝对路径 | allow | ✅（绑定前后同路径 对照：未绑定→跨副本拒；绑定→放行，采用路由真宿主生效） |
+| L5 | 采用后 write 相对路径 `src/…` | deny + 副本前缀重试路径 | ✅ 文案精确给出 `.worktrees/worktree-live-smoke/src/...` |
+| L6 | `bash -c 'cd <副本> && …'` | allow + "采用模式"标记 | ✅ 守卫放行 + post-execute 标记注入（真实可见）。**发现-4（环境）**：WSL bash 读不懂副本 `.git` 指针（Windows 绝对路径被当相对路径拼接）→ git 操作需 pwsh / `git -C`（已写进指引文案） |
+| L7 | 未绑定 `git push --dry-run origin master` | 放行（只读） | ✅（git 确认将快进 d71d4b8..7831010，未发送） |
+| L8 | approval=never 会话调 `worktree_authorize_main` | 三段式 deny + 人工通道 | ✅（issue #1 修复活体闭环，CLI 绝对路径内嵌） |
+| L9 | `worktree_status` | adopted 模式 + 等级字段 | ✅ mode:adopted / isolation:disciplinary / 副本列示含合并证明与脏标记 |
+| L10 | `worktree_remove{confirm_remove:true, delete_branch:true}` | 真删（不再死循环） | ✅ 先验证脏副本拒绝路径（加分），清标记后**副本+已合并分支真删**（issue #5 修复活体闭环） |
+| L11 | 审计落盘 | 各操作均有记录 | ✅（606 行：read 标记 / deny_write 新文案 / enter mode:adopted / remove…） |
+| L12 | 只读检索含 `authorize-main` 的文档 | 放行 | ✅（#1 附注的误报类修复不回退） |
+| + | remove 后 status→prune | last_active 清理 | ✅（#3 行为活体可见） |
 
-| # | 操作 | 预期 |
-|---|---|---|
-| L1 | 重启后新开会话，查看可用工具 | `worktree_create/enter/exit/status/remove/prune/authorize_main/revoke_main/allow` 全部注册 |
-| L2 | 主 checkout 会话调 `worktree_create{task_name:"smoke"}` | 成功；summary 第一条"下一步"是会话内采用（enter），不是"新开会话" |
-| L3 | 同会话调 `worktree_enter{path:<副本>}` | `bound:true, mode:"adopted"`；无需任何 GUI 工作区操作 |
-| L4 | 采用后 `write` 写 `<repo>/.worktrees/worktree-smoke/x.txt` | 成功，文件落在副本内 |
-| L5 | 采用后 `write` 写相对路径 `src/x.ts` | 被拦，deny 文案含副本前缀重试路径（`.worktrees/worktree-smoke/src/x.ts`） |
-| L6 | `bash` 执行 `cd .worktrees/worktree-smoke && git status` | 允许执行，post-execute 附"采用模式"标记 |
-| L7 | `git push --dry-run origin master`（未绑定主 checkout） | 放行（只读） |
-| L8 | approval=never 会话调 `worktree_authorize_main` | 三段式 deny + CLI 人工通道（含 `wt.js` 绝对路径） |
-| L9 | `worktree_status` | `isolation` 与当前形态一致（adopted→disciplinary）；`mode:"adopted"` |
-| L10 | `worktree_remove{path, confirm_remove:true}` | 真实删除成功（不再死循环"需确认"） |
-| L11 | 检查 `<repo>/.git/worktree-guard/audit.jsonl` | 本轮各操作均有审计行 |
-| L12 | 读文档命令抽查（如检索含 `authorize-main` 的 README 行） | 只读检查链放行；真实执行仍拦（round-13/15 行为不回退） |
+**本轮活体发现与处置**：
+1. **bug-1（create schema 漂移）**、**bug-2（enter schema 漂移）**：宿主对 execute 返回做严格 schema 校验（`additionalProperties:false`），离线直调 execute 看不到。修复 + 新增 [test/round20-schema.test.js](../test/round20-schema.test.js) 离线强制 schema↔返回锁步。
+2. **bug-3（required 与错误形状冲突）**：宿主同样校验错误返回——`guarded()` 的通用 `{error}` 形状违反任何 required 键。output schema 一律不再带 required。
+3. **发现-4（WSL/git 边界）**：环境级，非插件缺陷；指引文案已注明 Windows 宿主 git 用 pwsh / `git -C`。
+4. **C9 分级**：adopted 绑定不再触发 danger-full-access 一刀切（rooted 保留）。本轮会话的沙箱模式实际解析非 danger，未触发该路径；语义由测试覆盖（round18-I3 / smoke S2.4f）。
+5. status 的 adopted 等级文案此前用了通用措辞，已改为采用专属（路由生效、边界未动）。
+
+**遗留待下次重启后复验**：L2/L3 的工具层调用（bug-1/2 修复需重载）；其余各项已在真宿主闭环。
 
 ## 维护约定
 

@@ -16,7 +16,7 @@ export const PREFIX = "[worktree-guard]";
 /** Channel 2 — standing runtime-context line (bound sessions only; 1 line). */
 export function standingLine(binding) {
   if (binding?.mode === "adopted") {
-    return `${PREFIX} 本会话已绑定 worktree 副本 ${worktreeNameOf(binding.worktree)}（分支 ${binding.branch ?? "?"}，采用模式）：write/edit 与搜索按副本内落盘，bash 用 bash -c 'cd <副本> && …'；主 checkout 的绝对路径会被拦截/标注。`;
+    return `${PREFIX} 本会话已绑定 worktree 副本 ${worktreeNameOf(binding.worktree)}（分支 ${binding.branch ?? "?"}，采用模式）：write/edit 与搜索按副本内落盘，bash 用 bash -c 'cd <副本> && …'（Windows 宿主上 git 请用 pwsh / git -C，WSL bash 读不懂副本 .git 指针）；主 checkout 的绝对路径会被拦截/标注。`;
   }
   return `${PREFIX} 本会话锚定 worktree 副本 ${worktreeNameOf(binding.worktree)}（分支 ${binding.branch ?? "?"}）。读写均以本目录为基准；主 checkout 与其他副本的路径会被拦截/标注。`;
 }

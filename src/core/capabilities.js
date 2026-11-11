@@ -128,7 +128,7 @@ export function nextIsolationSteps(caps = {}) {
     );
   } else {
     steps.push(
-      "会话内采用副本（无需新开工作区）：worktree_enter{path} 绑定该副本，进入采用模式——write/edit/搜索用 .worktrees/<副本名>/ 前缀路径（在会话写边界之内），bash 用 bash -c 'cd <副本> && …'（相对 cd）。",
+      "会话内采用副本（无需新开工作区）：worktree_enter{path} 绑定该副本，进入采用模式——write/edit/搜索用 .worktrees/<副本名>/ 前缀路径（在会话写边界之内）；bash 里非 git 命令可用 bash -c 'cd <副本> && …'（相对 cd），git 操作在 Windows 宿主上请用 pwsh 或 git -C（WSL bash 读不懂副本 .git 指针里的 Windows 绝对路径）。",
     );
   }
   if (path === "gui-workspace") {

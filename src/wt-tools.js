@@ -341,7 +341,14 @@ export function toolSpecs(helpers) {
           ...value,
           isolation: grade,
           isolation_reasons: isolationReasons({ mode: caps.sandboxMode, binding: value?.binding ?? null, cwd: s.cwd, copiesUnbound }),
-          isolation_note: isolationNote({ grade, mode: caps.sandboxMode, copiesUnbound }),
+          // live-T3: an adopted binding must get the ADOPTED note (routing
+          // works, boundary did not move), not the generic not-in-copy line
+          isolation_note: isolationNote({
+            grade,
+            mode: caps.sandboxMode,
+            copiesUnbound,
+            adopted: value?.binding?.mode === "adopted" && grade !== "structural",
+          }),
           next_actions: grade === "structural" ? [] : withPathTypedRoute(caps),
         };
       },

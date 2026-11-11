@@ -353,7 +353,18 @@ export function toolSpecs(helpers) {
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
-        const r = await lifecycle.remove({ ...args, cwd: s.cwd, config: cfg, sessionId: s.id });
+        // issue #5: the wire schema is snake_case, lifecycle is camelCase — the
+        // old `...args` passthrough never set confirmRemove, so the tool could
+        // ONLY ever answer "needConfirm" (an infinite loop). Map explicitly,
+        // like every sibling tool does.
+        const r = await lifecycle.remove({
+          path: args.path,
+          confirmRemove: args.confirm_remove === true,
+          deleteBranch: args.delete_branch === true,
+          cwd: s.cwd,
+          config: cfg,
+          sessionId: s.id,
+        });
         bustGuardContextCache();
         return r;
       },

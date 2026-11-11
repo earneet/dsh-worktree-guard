@@ -1,6 +1,15 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-11-11 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-18 后全量 229/229）**
+日期：2026-11-11 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-19 后全量 234/234）**
+
+## worktree_remove 参数错配修复（round-19，0.2.4，issue #5）
+
+issue #5（实测 + 源码定位，分析完全准确）：工具 schema 是 snake_case（`confirm_remove`/`delete_branch`），`lifecycle.remove` 形参是 camelCase，而 execute 用 `...args` 裸透传——`confirmRemove` 恒为 `undefined`，工具**在任何情况下**只能返回"需确认：confirm_remove:true 后重试"，形成"提示补传已传参数"的死循环；收尾被卡死后模型回落 `git worktree remove`/`git branch -D` 又被词法网拦，复刻 #1 式指引死结。
+
+- **根因与盲区**：全仓唯一的 `...args` 透传（其余工具均显式映射）；既有 230 个测试全部绕过该边界——remove 测试直调 lifecycle（camelCase）或走 CLI（自行映射），**工具层的 snake_case→camelCase 边界从未被覆盖**。
+- **修复**：`worktree_remove` execute 显式映射（`confirmRemove: args.confirm_remove === true`、`deleteBranch: args.delete_branch === true`），与 create/prune/authorize/allow 一致；needConfirm 文案因此只在参数真缺失时出现。
+- **回归（[test/round19-issue5.test.js](test/round19-issue5.test.js)，5 项）**：缺参数 → needConfirm（门不变）；`confirm_remove:true` 真正删除副本+已合并分支；未合并 + `delete_branch:true` → 整个删除被拒（merged-only 硬规则）且不带 `delete_branch` 重试可删副本留分支；`exit(action:"remove")` 内部 camelCase 路径不受影响；**源码级防线**——wt-tools 禁止 `...args,` 形式的裸透传（正则匹配调用边界，注释引用不算），并断言四个兄弟映射片段不漂移 + status/prune/create 工具层冒烟。
+- 全量 `npm test` → **234/234 pass**；`npm run verify:package` 通过（0.2.4）。
 
 ## 会话内采用副本（round-18，0.2.4，用户反馈）
 
@@ -120,8 +129,9 @@ GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell �
 | 8. 审查修复回归（round-16） | 新增 [test/round16-review.test.js](test/round16-review.test.js)（15 项） | ✅ 15/15 |
 | 9. 可达性分级与隔离等级（round-17，issue #4） | 新增 [test/round17-issue4.test.js](test/round17-issue4.test.js)（14 项） | ✅ 14/14 |
 | 10. 会话内采用副本（round-18，用户反馈） | 新增 [test/round18-issue5.test.js](test/round18-issue5.test.js)（8 项） | ✅ 8/8 |
+| 11. worktree_remove 参数错配（round-19，issue #5） | 新增 [test/round19-issue5.test.js](test/round19-issue5.test.js)（5 项） | ✅ 5/5 |
 
-全量回归：`npm test` → **229/229 pass**（round-7/8/13/14/15/16/17/18 已并入套件）。
+全量回归：`npm test` → **234/234 pass**（round-7/8/13/14/15/16/17/18/19 已并入套件）。
 
 ## 守卫网覆盖（G 系列，经 decideToolCall 实测）
 

@@ -187,13 +187,23 @@ test("R18-I2 采用后：副本内写入放行、主 checkout 写入仍 deny 并
   assert.equal(takePendingMark(plain.callId), null);
 });
 
-test("R18-I3 采用不解锁 C9：danger-full-access 下绑定会话仍 deny", async () => {
+test("R18-I3 C9 分级：adopted 在 danger-full-access 下不再一刀切拒绝；rooted 仍拒（live-T3 修复）", async () => {
+  // adopted + danger: adoption is pure routing at an already-disclosed
+  // disciplinary grade — the blanket deny only bricked the session (the
+  // reporter's exact preset is danger-full-access).
   const d = await decideToolCall(mkExec("write", { file_path: join(copy, "x.ts") }, repo, "adopt-1"), {
+    sandboxModeOf: () => "danger-full-access",
+    hostCapabilitiesOf: async () => ({ sandboxMode: "danger-full-access" }),
+  });
+  assert.equal(d.kind, "allow", d.reason);
+  // rooted + danger: the structural claim is void, so the C9 net stays.
+  await lifecycle.enter({ path: copy, sessionId: "rooted-danger", cwd: copy });
+  const d2 = await decideToolCall(mkExec("write", { file_path: join(copy, "y.ts") }, copy, "rooted-danger"), {
     sandboxModeOf: () => "danger-full-access",
     hostCapabilitiesOf: async () => ({}),
   });
-  assert.equal(d.kind, "deny");
-  assert.match(d.reason, /danger-full-access/);
+  assert.equal(d2.kind, "deny");
+  assert.match(d2.reason, /danger-full-access/);
 });
 
 test("R18-I4 副本在会话根之外：拒绝绑定并给出宿主侧路径（不允许无边界改写）", async () => {

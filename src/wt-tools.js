@@ -71,13 +71,17 @@ function renderError(value) {
 // ONLY on the parent object's array, boolean additionalProperties, items,
 // enum/const, exact-one oneOf — `required` inside a scalar node is rejected) ----
 const S = {
-  // `required` args are accepted for readability but NOT emitted on the node;
-  // parent objects declare requiredness via their own array.
+  // `required` args are accepted for readability but NOT emitted on the node.
+  // obj() also DROPS the required array entirely (live-T3 finding, 0.2.4): the
+  // host validates EVERY execute return against this schema — including the
+  // generic guarded() error shape `{error}` — so any required key would make
+  // every failing call "invalid output" instead of showing the three-part
+  // error. additionalProperties:false is what actually catches schema drift.
   str: (_required = false, description) => ({ type: "string", ...(description ? { description } : {}) }),
   bool: () => ({ type: "boolean" }),
   int: () => ({ type: "integer" }),
   nullableStr: () => ({ oneOf: [{ type: "null" }, { type: "string" }] }),
-  obj: (properties, required = []) => ({ type: "object", properties, required: required.filter((k) => properties[k]), additionalProperties: false }),
+  obj: (properties, _required = []) => ({ type: "object", properties, additionalProperties: false }),
   loose: () => ({ type: "object", additionalProperties: true }),
   err: () => ({ type: "string", description: "three-part failure text when the operation failed" }),
 };
@@ -129,8 +133,15 @@ export function toolSpecs(helpers) {
         required: ["task_name"],
       },
       output: {
+        // live-T3 finding (17:5x): execute returned isolation/next_steps/summary
+        // while the schema (additionalProperties:false) did not declare them —
+        // the HOST validates the return against this schema, so worktree_create
+        // failed every real call (offline smoke called execute directly and
+        // never saw it). Schema and execute must stay in lockstep; round-20
+        // enforces it offline for every tool.
         schema: S.obj({
-          worktree: S.str(true), branch: S.str(true), base: S.str(true), brief_path: S.str(true), error: S.err(),
+          worktree: S.str(true), branch: S.str(true), base: S.str(true), brief_path: S.str(true),
+          isolation: S.str(), next_steps: S.str(), summary: S.str(), error: S.err(),
         }, ["worktree", "branch", "base", "brief_path"]),
         // Issue #4: the recommendation is graded by what the HOST can actually
         // do; the discipline-grade fallback names its grade instead of hiding in
@@ -174,9 +185,12 @@ export function toolSpecs(helpers) {
         required: ["path"],
       },
       output: {
+        // every key any execute branch returns must be declared here (see the
+        // create-schema live finding above — the host validates against this)
         schema: S.obj({
-          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), switched: S.bool(),
-          adopted: S.bool(), mode: S.str(), isolation: S.str(), error: S.err(),
+          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(),
+          switched: S.bool(), adopted: S.bool(), mode: S.str(), session_root: S.str(), diagnosis: S.str(),
+          isolation: S.str(), error: S.err(),
         }, ["bound"]),
         render: (_a, v) => renderError(v) ?? blocks(
           v.bound

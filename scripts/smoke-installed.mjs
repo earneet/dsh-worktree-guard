@@ -199,7 +199,7 @@ try {
     mkExec("write", { file_path: join(created.worktree, "x.ts") }, repo, "smoke-s3"),
     { sandboxModeOf: () => "danger-full-access", hostCapabilitiesOf: async () => ({ sandboxMode: "danger-full-access" }) },
   );
-  ok("S2.4f", "danger-full-access 绑定网（C9）不因采用解锁 → deny", danger.kind === "deny" && /danger-full-access/.test(danger.reason), danger.reason);
+  ok("S2.4f", "danger-full-access 下 adopted 绑定不再被 C9 一刀切（路由照常；rooted 仍受 C9 网）", danger.kind === "allow", danger.reason);
 
   // S2.5 status (adopted)
   const st2 = await specOf("worktree_status").execute({}, mkExec("worktree_status", {}, repo, "smoke-s3"));

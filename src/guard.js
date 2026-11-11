@@ -162,9 +162,13 @@ async function loadAuth(commonDir, mainRoot) {
 /**
  * Sandbox linkage (C9, defensive): `opts.sandboxModeOf(header)` is supplied
  * by index.js when the host exposes the capability; absence => no-op.
- * Bound sessions under danger-full-access lose the structural layer entirely,
+ * ROOTED sessions under danger-full-access lose the structural layer entirely,
  * so the guard denies with an explicit warning instead of silently degrading
- * (design §11).
+ * (design §11). ADOPTED sessions are exempt (live-T3 finding, 0.2.4): adoption
+ * claims nothing structural — its grade is already disciplinary (P6) — so a
+ * blanket deny would brick the session without adding any protection; the
+ * routing (copy-prefixed writes, cross-copy denials) keeps working exactly as
+ * documented.
  */
 async function sandboxDenied(binding, opts, header) {
   if (!binding || typeof opts?.sandboxModeOf !== "function") return null;
@@ -174,10 +178,10 @@ async function sandboxDenied(binding, opts, header) {
   } catch {
     return null; // capability probe failure -> lexical net continues (P1)
   }
-  if (mode === "danger-full-access") {
+  if (mode === "danger-full-access" && binding.mode !== "adopted") {
     return {
       kind: "deny",
-      reason: `[worktree-guard] 已阻止工具调用。\n原因：会话沙箱处于 danger-full-access，为防结构性绕过，绑定会话（${binding.worktree}）在此模式下所有非 worktree_* 工具均被拒绝。\n下一步：将沙箱模式切回 workspace-write 后继续；确需全权操作请先调用 worktree_exit 解绑。`,
+      reason: `[worktree-guard] 已阻止工具调用。\n原因：会话沙箱处于 danger-full-access，为防结构性绕过，绑定会话（${binding.worktree}）在此模式下所有非 worktree_* 工具均被拒绝（采用模式绑定除外：它本就是纪律级路由）。\n下一步：将沙箱模式切回 workspace-write 后继续；确需全权操作请先调用 worktree_exit 解绑。`,
     };
   }
   return null;

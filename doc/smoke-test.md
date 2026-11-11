@@ -82,8 +82,8 @@ profile 依赖从 registry 版本号改为**本地 tarball 的 `file:` 安装**�
 | # | 操作 | 预期 | 结果 |
 |---|---|---|---|
 | L1 | 重启后查工具注册（cordis inspect） | 9 个 worktree_* 全注册，描述为 0.2.4 文本 | ✅ |
-| L2 | `worktree_create{task_name:"live-smoke"}` | 成功 + 采用优先指引 | ⚠️ **活体抓到 bug-1**：宿主校验 execute 返回值，schema 未声明 `isolation/next_steps/summary` → 工具调用被打回（副本已建、副作用已发生）。已修复（7831010），工具层复验待下次重启；lifecycle 层当轮已验证 |
-| L3 | `worktree_enter{path}` | bound+adopted | ⚠️ **bug-2 同类**：refused/adopted 形状的 `diagnosis/session_root` 未声明（活体 enter{Z:\no-such-copy} 打回）。已修复；lifecycle 层当轮经 rig 绑定验证 |
+| L2 | `worktree_create{task_name:"live-smoke"}` | 成功 + 采用优先指引 | ✅（首轮抓到 bug-1 已修复；18:20 重启后工具层复验通过：等级 + 采用指引 + WSL 提示完整返回） |
+| L3 | `worktree_enter{path}` | bound+adopted | ✅（bug-2 同类已修复；重启后工具层复验通过：adopted 返回过宿主校验，文案标注"沙箱边界未移动"） |
 | L4 | 采用后 write 副本内绝对路径 | allow | ✅（绑定前后同路径 对照：未绑定→跨副本拒；绑定→放行，采用路由真宿主生效） |
 | L5 | 采用后 write 相对路径 `src/…` | deny + 副本前缀重试路径 | ✅ 文案精确给出 `.worktrees/worktree-live-smoke/src/...` |
 | L6 | `bash -c 'cd <副本> && …'` | allow + "采用模式"标记 | ✅ 守卫放行 + post-execute 标记注入（真实可见）。**发现-4（环境）**：WSL bash 读不懂副本 `.git` 指针（Windows 绝对路径被当相对路径拼接）→ git 操作需 pwsh / `git -C`（已写进指引文案） |
@@ -102,7 +102,7 @@ profile 依赖从 registry 版本号改为**本地 tarball 的 `file:` 安装**�
 4. **C9 分级**：adopted 绑定不再触发 danger-full-access 一刀切（rooted 保留）。本轮会话的沙箱模式实际解析非 danger，未触发该路径；语义由测试覆盖（round18-I3 / smoke S2.4f）。
 5. status 的 adopted 等级文案此前用了通用措辞，已改为采用专属（路由生效、边界未动）。
 
-**遗留待下次重启后复验**：L2/L3 的工具层调用（bug-1/2 修复需重载）；其余各项已在真宿主闭环。
+**遗留待下次重启后复验**：~~L2/L3 的工具层调用~~（18:20 重启后已复验通过，L1–L12 全绿）。T3 清单至此**全部闭环**。
 
 ## 维护约定
 

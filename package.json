@@ -20,6 +20,7 @@
   "files": ["src", "wt.js", "cordis.patch.yml", "README.md", "LICENSE"],
   "scripts": {
     "test": "node scripts/run-tests.mjs \"test/*.test.js\"",
+    "smoke:installed": "node scripts/smoke-installed.mjs",
     "verify:package": "node scripts/verify-package.mjs"
   },
   "engines": { "node": ">=20" },

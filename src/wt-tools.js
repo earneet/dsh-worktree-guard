@@ -11,11 +11,42 @@ import { appendAudit, addAllowEntry, clearAllowlist, readAllowlist } from "./cor
 import { authorizeMain, revokeMain } from "./core/authorize.js";
 import { loadSidecar } from "./core/sidecar.js";
 import { DEFAULT_AUTHORIZE_TTL_MIN, DEFAULT_ALLOW_TTL_MIN, ALLOW_TTL_CAP_MIN } from "./core/constants.js";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, join as joinPath } from "node:path";
 import { norm } from "./core/paths.js";
 import { CLI_PATH } from "./core/cli-path.js";
+import { isolationGrade, isolationNote, isolationReasons, withPathTypedRoute } from "./core/capabilities.js";
 
 const blocks = (text) => [{ type: "text", text }];
+
+/**
+ * Issue #4: `worktree_create` and `worktree_enter` used to hand back the same
+ * "open a new session rooted at the copy" recommendation even when the host
+ * offered no way to do it, and the only remaining path (absolute paths from a
+ * main-rooted session) was described as an aside. The recommendation is now
+ * capability-graded and the fallback names its real grade.
+ */
+function hostCapabilities(helpers, exec) {
+  const sid = exec?.agent?.session?.header?.id;
+  return typeof helpers?.hostCapabilities === "function"
+    ? helpers.hostCapabilities(sid).catch(() => ({}))
+    : Promise.resolve({});
+}
+
+/** 3-part deny/render for a session whose root is not the copy (issue #4). */
+function rootGuidance(target, caps) {
+  return [
+    `目标副本：${target}`,
+    `下一步（按本宿主实际能力排序，只列探得到的）：`,
+    ...withPathTypedRoute(caps).map((s, i) => ` ${i + 1}. ${s}`),
+  ].join("\n");
+}
+
+/** 1-line grade for `worktree_status` (see the tool's execute()). Pure view. */
+function statusIsolationOrNull(v) {
+  if (!v?.isolation) return null;
+  return { grade: v.isolation, line: v.isolation_note ?? "" };
+}
+
 
 /** m1 (round-5) + round-10: errors return the STRUCTURED `{ error }` value —
  *  the three-part contract lives in the render text, never a raw stack trace. */
@@ -100,29 +131,50 @@ export function toolSpecs(helpers) {
         schema: S.obj({
           worktree: S.str(true), branch: S.str(true), base: S.str(true), brief_path: S.str(true), error: S.err(),
         }, ["worktree", "branch", "base", "brief_path"]),
-        render: (_a, v) => renderError(v) ?? blocks([
-          `已创建副本：${v.worktree}`,
-          `分支：${v.branch}（基于 ${v.base}）`,
-          `下一步（推荐）：以副本为根新开会话（该会话沙箱自动锚定副本）。`,
-          `若继续本会话：本会话未绑定副本，写文件务必用指向副本内的绝对路径——相对路径会落到主 checkout。`,
-          `任务简报已写入 ${v.brief_path}`,
-        ].join("\n")),
+        // Issue #4: the recommendation is graded by what the HOST can actually
+        // do; the discipline-grade fallback names its grade instead of hiding in
+        // a subordinate clause.
+        render: (_a, v) => renderError(v) ?? blocks(v.summary ?? `已创建副本：${v.worktree}`),
       },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const cfg = await helpers.config(s.cwd);
         const r = await lifecycle.create({ taskName: args.task_name, taskBrief: args.task_brief, cwd: s.cwd, config: cfg });
         bustGuardContextCache(); // new copy visible to the net immediately (round-1 fix)
-        return { worktree: r.worktree, branch: r.branch, base: r.base, brief_path: `${r.worktree}/.dsh/task-brief.md` };
+        const brief_path = joinPath(r.worktree, ".dsh", "task-brief.md");
+        const caps = await hostCapabilities(helpers, exec);
+        const grade = isolationGrade({ mode: caps.sandboxMode, binding: null, cwd: s.cwd });
+        return {
+          worktree: r.worktree,
+          branch: r.branch,
+          base: r.base,
+          brief_path,
+          isolation: grade,
+          next_steps: rootGuidance(r.worktree, caps),
+          summary: [
+            `已创建副本：${r.worktree}`,
+            `分支：${r.branch}（基于 ${r.base}）`,
+            `任务简报已写入 ${brief_path}`,
+            isolationNote({ grade, mode: caps.sandboxMode, copiesUnbound: true }),
+            rootGuidance(r.worktree, caps),
+          ].join("\n"),
+        };
       },
     },
     {
       name: "worktree_enter",
       description: enterDesc,
-      parameters: { type: "object", properties: { path: str("worktree path", "path to the worktree copy") }, required: ["path"] },
+      parameters: {
+        type: "object",
+        properties: {
+          path: str("worktree path", "path to the worktree copy"),
+          switch_session: bool("ask the host to move THIS session into the copy (ctx.workingDirectory.set) when the session root is not the copy; requires explicit user consent, because the write boundary stays at the session's creation cwd"),
+        },
+        required: ["path"],
+      },
       output: {
         schema: S.obj({
-          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), error: S.err(),
+          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), switched: S.bool(), isolation: S.str(), error: S.err(),
         }, ["bound"]),
         render: (_a, v) => renderError(v) ?? blocks(
           v.bound
@@ -132,16 +184,42 @@ export function toolSpecs(helpers) {
       },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
+        const caps = await hostCapabilities(helpers, exec);
         // A repo-rooted session must not bind: without structural isolation it
         // would read the main checkout's world while every write gets denied,
         // i.e. a permanent deny loop. Refuse and hand back guidance instead
-        // (design §8).
+        // (design §8). Issue #4: the guidance is capability-graded, and the
+        // host-driven session move (ctx.workingDirectory.set) is offered as the
+        // one action that IS reachable from inside a session.
         const target = resolvePath(s.cwd, args.path ?? ".");
         if (norm(s.cwd) !== norm(target)) {
-          return { bound: false, reason: "repo-rooted 绑定会造成读写分裂", guidance: `以 ${target} 为会话根新开会话（推荐），获得结构性隔离。` };
+          if (args.switch_session === true) {
+            const moved = await helpers.switchSession?.(target, args).catch((err) => ({ ok: false, reason: String(err?.message ?? err) }));
+            if (moved?.ok) {
+              return {
+                bound: true,
+                switched: true,
+                worktree: moved.cwd ?? target,
+                branch: moved.branch ?? "",
+                isolation: isolationGrade({ mode: caps.sandboxMode, binding: { worktree: target }, cwd: moved.cwd ?? target }),
+              };
+            }
+            return {
+              bound: false,
+              switched: false,
+              reason: moved?.reason ?? "宿主不支持会话目录切换（ctx.workingDirectory.set 不可用）",
+              guidance: rootGuidance(target, caps),
+            };
+          }
+          return { bound: false, reason: "repo-rooted 绑定会造成读写分裂", guidance: rootGuidance(target, caps) };
         }
         const binding = await lifecycle.enter({ path: args.path, sessionId: s.id, cwd: s.cwd });
-        return { bound: true, worktree: binding.worktree, branch: binding.branch ?? "" };
+        return {
+          bound: true,
+          worktree: binding.worktree,
+          branch: binding.branch ?? "",
+          isolation: isolationGrade({ mode: caps.sandboxMode, binding, cwd: s.cwd }),
+        };
       },
     },
     {
@@ -180,13 +258,22 @@ export function toolSpecs(helpers) {
           stale_bindings: { type: "array", items: S.loose() },
           stale_state_hint: S.nullableStr(),
           orphan_dirs: { type: "array", items: { type: "string" } },
+          // issue #4: the model must not have to infer "am I actually isolated?"
+          // from two failed calls — the grade is reported, with its reasons and
+          // the capability-graded next steps.
+          isolation: { type: "string", enum: ["structural", "disciplinary"] },
+          isolation_reasons: { type: "array", items: { type: "string" } },
+          isolation_note: S.str(),
+          next_actions: { type: "array", items: { type: "string" } },
           error: S.err(),
         }, ["mode", "copies"]),
         render: (_a, v) => {
           const e = renderError(v);
           if (e) return e;
+          const iso = statusIsolationOrNull(v);
           const lines = [
             `模式：${v.mode}${v.binding?.worktree ? `（绑定 ${v.binding.worktree}）` : ""}`,
+            ...(iso ? [`隔离：${iso.grade}。${iso.line}`] : []),
             ...(v.stale_bindings?.length
               ? [
                   `过期绑定（${v.stale_bindings.length}）：`,
@@ -197,13 +284,28 @@ export function toolSpecs(helpers) {
             ...(v.stale_state_hint ? [`提示：state.json 的 last_active 指向已不存在的路径（${v.stale_state_hint}）：调 worktree_prune 清理该信息性记录。`] : []),
             ...v.copies.map((c) =>
               ` - ${c.name} [${c.branch ?? "?"}] ${c.merged_into_head ? "已合并(证明)" : "未合并"}${c.dirty ? " 有未提交变更" : ""}${c.prunable ? " ⚠️目录已不存在(prunable)" : ""}${c.stale ? " ⚠️stale绑定" : ""}`),
+            ...(v.next_actions?.length
+              ? ["如需结构隔离（只列本宿主探得到的路径）：", ...v.next_actions.map((s, i) => ` ${i + 1}. ${s}`)]
+              : []),
           ];
           return blocks(lines.join("\n"));
         },
       },
-      async execute(args, exec) {
+      async execute(_args, exec) {
         const s = helpers.sessionOf(exec);
-        return await lifecycle.status({ cwd: s.cwd, sessionId: s.id });
+        const value = await lifecycle.status({ cwd: s.cwd, sessionId: s.id });
+        // Issue #4: grade the session from the SAME host probe the other tools
+        // use, so the model never has to infer it from two failed calls.
+        const caps = await hostCapabilities(helpers, exec);
+        const grade = isolationGrade({ mode: caps.sandboxMode, binding: value?.binding ?? null, cwd: s.cwd });
+        const copiesUnbound = (value?.copies?.length ?? 0) > 0 && !(value?.binding);
+        return {
+          ...value,
+          isolation: grade,
+          isolation_reasons: isolationReasons({ mode: caps.sandboxMode, binding: value?.binding ?? null, cwd: s.cwd, copiesUnbound }),
+          isolation_note: isolationNote({ grade, mode: caps.sandboxMode, copiesUnbound }),
+          next_actions: grade === "structural" ? [] : withPathTypedRoute(caps),
+        };
       },
     },
     {

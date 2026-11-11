@@ -1,5 +1,9 @@
 node_modules/
 *.tmp-*
+# scratch space for host-contract probes while working an issue (never committed)
+.tmp-*/
+.tmp-*
+.asar-index.txt
 # local tooling memory (grill-first / DSH config space); user sidecar config is
 # user-owned and must never be committed
 .dsh/

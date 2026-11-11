@@ -1,6 +1,17 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-11-10 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-16 后全量 207/207）**
+日期：2026-11-11 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-17 后全量 221/221）**
+
+## 可达性分级与隔离等级（round-17，issue #4）
+
+GitHub issue #4：`worktree_create` 推荐"以副本为根新开会话"，`worktree_enter` 拒绝时又给出同一个推荐，而该宿主的 GUI 没有这个入口——两条"下一步"指向同一个不可执行的动作；唯一可行的降级（在本会话里用绝对路径写副本）被放在从句里，实际隔离等级已从"结构"退化为"纪律"却不可见。
+
+- **宿主契约实证（本机 DSH 0.2.2-rc.1 的 app.asar 与宿主服务目录）**：写边界 = 会话创建时的 `cwd`（`sandboxPolicy.resolve` → `workspaceRoot = session.header.cwd`）；GUI 采纳目录的方式是"添加工作区…"（`directoryPicker.pick`）→ 在该工作区新建会话；宿主可移动会话目录（`workingDirectory.set`，会追加 `working-directory/change` 事件并注入提示）；`ctx.worktrees.create` 创建后**会调用** `workingDirectory.set`，因此"新开副本会话"在宿主侧确实存在（只是插件无法替用户触发）。
+- **新增 [src/core/capabilities.js](src/core/capabilities.js)**：能力探测（`workspaceRegistry` / `directoryPicker` / `workingDirectory.set` / 宿主 `worktrees` 服务 / profile 目录）+ 纯函数分级——`structuralFence(mode)`（只有已探测的非 danger 模式才算围栏）、`isolationGrade`（"结构"= 绑定根在副本且沙箱有围栏；其余"纪律"）、`isolationReasons` / `isolationNote`、`nextIsolationSteps` / `withPathTypedRoute`（按探到的能力排序，探不到就只给"降级继续"）。
+- **工具面**：`worktree_create` / `worktree_enter` 的"下一步"改为能力分级文案（GUI 无 picker 时给出 `dsh workspace … create` 路径式入口），create 输出写出 `isolation` 与"隔离等级：纪律（存在未绑定的副本…）"；`worktree_enter` 新增可选 `switch_session`（gated 工具，需用户确认）走宿主 `workingDirectory.set`，成功也不声称写边界已移动；`worktree_status` 新增 `isolation` / `isolation_reasons` / `isolation_note` / `next_actions`。
+- **会话启动注入**：存在副本但本会话不在其中时，注入 3 行以内"等级 + 可达路径 + 在此之前怎么写"（无副本时仍零注入，P1）。
+- **deny 文案**：跨副本写入的"下一步"不再许诺"绝对路径写副本"；被围栏的沙箱下绑定会话写主 checkout / 定向主根的 shell，deny 追加一行"副本写边界不含副本（沙箱会拒绝写到副本的绝对路径）"，并与 deny 自身文案去重（`FENCE_MARKER`）。
+- **测试**：新增 [test/round17-issue4.test.js](test/round17-issue4.test.js)（14 项：围栏/等级/原因、能力探测（含全缺宿主）、可达性分级、deny 追加与去重、create/enter/status/会话启动注入/宿主切换成功路径）；更新 R5-4（存在未绑定副本时注入等级提示，过期提示仍静默）。全量 `npm test` → **221/221 pass**；`npm run verify:package` 通过。
 
 ## issue #1/#2/#3 修复轮（round-14，2026-11-09）
 
@@ -95,8 +106,9 @@ GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell �
 | 6. issue 修复回归（round-14） | 新增 [test/round14-issues.test.js](test/round14-issues.test.js)（18 项） | ✅ 18/18 |
 | 7. 引号文本回归（round-15） | 新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（11 项） | ✅ 11/11 |
 | 8. 审查修复回归（round-16） | 新增 [test/round16-review.test.js](test/round16-review.test.js)（15 项） | ✅ 15/15 |
+| 9. 可达性分级与隔离等级（round-17，issue #4） | 新增 [test/round17-issue4.test.js](test/round17-issue4.test.js)（14 项） | ✅ 14/14 |
 
-全量回归：`npm test` → **207/207 pass**（round-7/8/13/14/15/16 已并入套件）。
+全量回归：`npm test` → **221/221 pass**（round-7/8/13/14/15/16/17 已并入套件）。
 
 ## 守卫网覆盖（G 系列，经 decideToolCall 实测）
 

@@ -9,6 +9,7 @@
 ## 它做什么
 
 - **会话根模式（产品本体）**：`worktree_create` 建副本后，以副本为会话根新开会话 → DSH 沙箱自动锚定，写隔离即结构。
+- **指引按可达性分级（0.2.4，issue #4）**：`worktree_create`/`worktree_enter` 的"下一步"只给本宿主**探测到**的路径——GUI 可采纳目录时给"添加工作区…→新建会话"，没有 picker 时给 `dsh workspace … create`；同时点名当前隔离等级（`worktree_status` 的 `isolation` 字段），不再把"纪律级降级"藏在从句里，也不再给出两个工具互相指向同一个不可执行动作的闭环。
 - **常开安全网**（是否绑定都生效）：跨副本写入、写 `.git`/状态区、删 worktree 分支、`git -C` 定向到主根 → deny + 单轮可执行的指令。push 受保护分支（master/main）默认拦截；**唯一放行例外（0.2.3，issue #1）**：未绑定会话、会话根就在主 checkout、且推送的是**当前所在**受保护分支 → 放行并写 `allow_protected_push` 审计。绑定会话、非当前受保护分支、`--force`/`--force-with-lease`/`--delete`/`--all`/`--mirror`/`+refspec` 仍拦；`--dry-run` 只读放行。
 - **读域守卫**：绑定态读主 checkout → 放行 + 溯源标记（默认 warn）或 deny（strict）——防止"写对地方、改错东西"。
 - **机械人闸**：`worktree_authorize_main`/`worktree_allow` 走 pre-execute ask 门，模型无法自授；审批提示被禁用的会话（`approval=never`）改为带人工通道指引的 deny，并可用 CLI 交互式挑战完成授权。
@@ -18,10 +19,12 @@
 
 | 等级 | 覆盖 |
 |---|---|
-| 结构拒绝 | 会话根沙箱写隔离；authorize ask 门 |
+| 结构拒绝 | 会话根沙箱写隔离（写边界 = 会话创建时的 cwd）；authorize ask 门 |
 | 运行期挑战 | CLI `authorize-main` 的**一次性确认码**：机械校验，非结构边界、非身份认证——能读取该终端并注入输入的程序可重放（§14） |
 | 词法启发 | pwsh 命令文本、路径归一化判域、读域守卫（8.3 短名/变量拼接可绕——raise the bar，非边界） |
-| 纯纪律 | danger-full-access 下的一切（含任意脚本内容/直接写状态文件的绕过） |
+| 纯纪律 | danger-full-access 下的一切（含任意脚本内容/直接写状态文件的绕过）；以及**任何会话根不在副本上的状态** |
+
+`worktree_status` 的 `isolation` 字段就是这张表的机器可读版：`structural` = 绑定且会话根就是副本、沙箱有围栏；其余一律 `disciplinary`，并在 `isolation_reasons` 里给出原因（`no-binding` / `binding-root-mismatch` / `sandbox-unfenced` / `sandbox-mode-unknown` / `unbound-with-copies`）。
 
 已知边界详见 [设计文档 §14](https://github.com/earneet/dsh-worktree-guard/blob/master/doc/design.md#14-已知边界p6-分级词汇写进-readme)。
 
@@ -45,7 +48,7 @@ node wt.js create fix-login --brief "修复登录"
 node wt.js status
 ```
 
-会话内（插件加载后）使用 `worktree_create` / `worktree_enter` / `worktree_exit` / `worktree_status` 等工具；被拦截时按 deny 消息的"下一步"行动，或调用 `worktree_status`。
+会话内（插件加载后）使用 `worktree_create` / `worktree_enter` / `worktree_exit` / `worktree_status` 等工具；被拦截时按 deny 消息的"下一步"行动，或调用 `worktree_status`（它的 `isolation` 字段说明当前隔离等级，`next_actions` 只列本宿主探得到的路径）。
 
 配置 sidecar：**主 checkout 根**的 `<repo>/.dsh/worktree-guard.json`（`protected_branches`、`read_policy`、`branch_prefix`、`main_write_whitelist`、`sync.*`、TTL 等，snake/camel 键均可；设计 §13）。注意 `main_write_whitelist` 为 **glob 全匹配**（如 `"docs/*"`、`"gen/**"`）；目录前缀不带通配符（如 `"docs/"`）不会命中。
 
@@ -69,6 +72,12 @@ node wt.js status
 - **push 主干的死路已消除（0.2.3，issue #1）**：在**未绑定**、会话根就在主 checkout 上工作的普通"提交并推送"场景，`git push origin master` / `git push` / `git push origin HEAD:master` 现在直接放行并写审计（这是用户自己的主干工作流，不是副本误推主干）。以下仍被拦截：绑定副本会话的受保护分支推送、推送非当前受保护分支、`--force`/`--force-with-lease`/`--delete`/`--all`/`--mirror`/`+refspec`；`--dry-run` 在任何状态放行（只读）。不满足放行条件时，deny 文案会说明是"绑定会话 / 非当前分支 / 破坏性选项"，并明确 `worktree_authorize_main` 在 `approval=never` 会话中不可用，不再制造"提示调 A、A 必失败"的闭环。**前缀不绕过**：`git -C/-c/--git-dir/--no-pager` 等全局选项、`git.exe`、`command/env/time/FOO=1` 前缀会先归一化再判定；带全局选项的受保护分支 push 直接 fail-closed（可能改道其他仓库），运行时拼接/变量 refspec 同样 fail-closed。
 - **引号内文本不再误当命令位（0.2.3，issue #1 残余）**：`git commit -m "(git push origin master)"`、`git commit -m "fix; git push origin master"`、宿主输出里的 `(git push ...)` 不再被拦截；但 `$()` 命令替换、`cmd /c` / `pwsh -Command` / `iex` / `bash/sh/zsh/dash -c` / `eval` 的引号参数仍按**代码**递归检测，常见脚本宿主（`node -e`、`python -c`、`perl -e`、`ruby -e`、`php -r` 等）的引号代码参数同样不放过，多行/分段命令与引号拼接也照旧拦截。`authorize-main` 字面动词仍对原始文本 fail-closed（`node wt.js "authorize-main"` 是真实 argv 路径，P4 自授防护），`git "checkout" main` 这类"引号里的真实 argv"也不放宽——见设计 §14。
 - **过期绑定诊断（0.2.3，issue #2/#3）**：`git -C` 指向已删除的副本路径时，deny 会说"路径已不存在（可能曾是被清理的副本）"并指向 `worktree_status`/`worktree_prune`，而不是误报"指向主 checkout"；`worktree_status` 与 `worktree_prune` 共用同一过期谓词，status 直接列出 `stale_bindings` 并给出 `worktree_prune` 动作，prune 同时清掉指向已消失路径的 `state.json.last_active`。
+- **副本会话指引按可达性分级（0.2.4，issue #4）**：DSH 的写边界是**会话创建时的 cwd**，GUI 采纳目录的方式是"添加工作区…（`directoryPicker.pick`）→ 在该工作区新建会话"。插件因此先探测宿主能力（`workspaceRegistry` / `directoryPicker` / `workingDirectory.set` / 宿主 `worktrees` 服务），只列探测得到的路径：
+  1. 有 picker：`worktree_create`/`worktree_enter` 给"添加工作区…→新建会话"；
+  2. 无 picker：给路径式入口 `dsh workspace --profile <profile> create --cwd "<副本目录>"`，再在 GUI 里对该工作区新建会话；
+  3. 另有 `worktree_enter{path, switch_session:true}`：调用宿主 `workingDirectory.set` 把**本会话目录**移进副本（gated 工具，需用户在弹窗确认）。⚠️ 写边界仍按会话创建时的 cwd 计算，所以这条**不是**结构隔离——它只让相对路径落到副本上；宿主 `worktrees.create` 也是用同一个 API 完成"新开副本会话"的，宿主侧那条才是结构级。
+  
+  同时：存在副本但本会话不在其中时，会话启动注入会直接写明 `隔离等级：纪律`（P6），被围栏的沙箱下 deny 会说明"副本写边界不含副本（沙箱会拒绝写到副本的绝对路径）"——不会再出现"推荐一个不可执行动作、同时把降级说成隔离"的情况。`danger-full-access` 下没有任何围栏，等级恒为纪律。
 
 ## 开发
 

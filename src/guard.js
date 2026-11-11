@@ -16,6 +16,7 @@ import { appendAudit, readState, readAllowlist, authorizeValid } from "./core/st
 import { loadSidecar } from "./core/sidecar.js";
 import { GUARD_CTX_TTL_MS, DEFAULT_PROTECTED_BRANCHES } from "./core/constants.js";
 import { manualOrCliHint, humanChannelHint } from "./core/cli-path.js";
+import { structuralFence, fenceRecoveryLine, FENCE_MARKER } from "./core/capabilities.js";
 import { access } from "node:fs/promises";
 
 const ctxCache = new Map(); // commonDir -> { at, ctx }
@@ -182,6 +183,29 @@ async function sandboxDenied(binding, opts, header) {
 }
 
 /**
+ * Issue #4 on the DENY path: with a FENCED sandbox the copy path is outside the
+ * session's write boundary, so the usual "write absolute paths into the copy"
+ * advice is refused by the sandbox itself. One line names the real route (the
+ * capability-graded copy the tools/notice channels use), once per session — the
+ * deny copy stays three parts (P6/§7 message budget).
+ */
+async function fenceAdvice(effOpts, header, target, denyReason) {
+  if (!effOpts?.hostCapabilitiesOf || typeof effOpts.sandboxModeOf !== "function") return null;
+  if (!target) return null;
+  let caps;
+  try {
+    caps = await effOpts.hostCapabilitiesOf(header);
+  } catch {
+    return null;
+  }
+  if (structuralFence(caps?.sandboxMode) === null) return null; // no fence -> normal copy holds
+  // issue #4: the copy's own deny may already point at the write isolation —
+  // never append the same advice twice.
+  if (String(denyReason ?? "").includes(FENCE_MARKER)) return null;
+  return fenceRecoveryLine(caps);
+}
+
+/**
  * Paths referenced by a shell command that do NOT exist (issue #2). The
  * decision tables stay fs-free; this probe only sharpens deny copy (a missing
  * copy path is not "the main checkout"), so a stat failure must never change
@@ -253,6 +277,8 @@ export async function decideToolCall(exec, opts = {}) {
     readPolicy: sidecar.readPolicy ?? opts.readPolicy,
     branchPrefix: sidecar.branchPrefix ?? opts.branchPrefix,
     sandboxModeOf: opts.sandboxModeOf,
+    // issue #4 deny copy: which session-root routes this host really offers
+    hostCapabilitiesOf: opts.hostCapabilitiesOf,
   };
   // rebuild the context when sidecar values affect it (protectedBranches feeds
   // the push net, branchPrefix feeds the branch-token net)
@@ -305,7 +331,11 @@ export async function decideToolCall(exec, opts = {}) {
       if (fresh) ({ commonDir, ctx } = fresh);
     }
     const d = decideWrite(target, baseDir, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
-    if (d.kind === "deny") await safeAudit(commonDir, ident.sessionId, "deny_write", d.reason, args);
+    if (d.kind === "deny") {
+      const fence = await fenceAdvice(effOpts, header, target, d.reason).catch(() => null);
+      if (fence) d.reason = `${d.reason}\n${fence}`;
+      await safeAudit(commonDir, ident.sessionId, "deny_write", d.reason, args);
+    }
     return d;
   }
   if (READ_TOOLS.has(toolName) || SEARCH_TOOLS.has(toolName)) {
@@ -333,6 +363,11 @@ export async function decideToolCall(exec, opts = {}) {
       // decision tables, and only feeds deny copy.
       const missingPaths = await missingPathSet(args.command, cwd, ctx.mainRoot).catch(() => new Set());
       d = decidePwsh({ command: args.command, currentBranchName: branchNow, cwd, missingPaths }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
+      if (d.kind === "deny") {
+        // issue #4: a fenced sandbox refuses copy-path writes; name the route
+        const fence = await fenceAdvice(effOpts, header, norm(cwd), d.reason).catch(() => null);
+        if (fence) d.reason = `${d.reason}\n${fence}`;
+      }
     } catch (err) {
       // a broken net must not brick the session: fail-open + audit (§11)
       await safeAudit(commonDir, ident.sessionId, "shell_guard_error", String(err), args);

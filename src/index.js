@@ -14,6 +14,10 @@ import { decideToolCall, takePendingMark, gateRejectionMark, isGatedTool } from 
 import { toolSpecs } from "./wt-tools.js";
 import { standingLine, sessionStartText } from "./notices.js";
 import { resolveBinding } from "./core/binding.js";
+import { probeHostCapabilities } from "./core/capabilities.js";
+import { norm } from "./core/paths.js";
+import * as lifecycle from "./core/lifecycle.js";
+import { bustGuardContextCache } from "./guard.js";
 
 export const name = "worktree-guard";
 export const inject = ["tools"];
@@ -76,25 +80,55 @@ export function apply(ctx, config) {
     }
   };
 
+  // Sandbox-mode capability probe (C9; also feeds the issue-#4 isolation grade).
+  // Missing capability degrades to a no-op (P1). Async-resilient: hosts whose
+  // resolve() returns a Promise still work.
+  const sandboxModeOfHeader = async (header) => {
+    try {
+      if (typeof ctx.fs?.sandboxMode === "string") return ctx.fs.sandboxMode;
+      const policy = typeof ctx.sandboxPolicy?.resolve === "function" ? await ctx.sandboxPolicy.resolve({ session: { header } }) : undefined;
+      return policy?.mode;
+    } catch {
+      return undefined;
+    }
+  };
+  // The tool layer receives `exec`, so the seam resolves the mode for the
+  // calling session (a mode override is per session, never process-global).
+  const headerOfExec = (exec) => exec?.agent?.session?.header ?? {};
+  const probeCaps = (exec) => probeHostCapabilities((k) => ctx.get(k));
+  // The last call the gate saw: the tool layer needs its session (per-session
+  // sandbox mode) and its Agent (host directory moves). The gate always runs
+  // before execute, so this is the caller; absent => honest "unknown".
+  let lastExec = null;
+
+  // Issue #4: move THIS session's directory into the copy with the host's own
+  // API (ctx.workingDirectory.set). The guard never rewrites the sandbox
+  // boundary itself — it records which directory was chosen, and reports back
+  // honestly that the write boundary did not move with it.
+  const switchSessionFor = async (exec, target) => {
+    const agent = exec?.agent;
+    const wd = typeof ctx.get === "function" ? ctx.get("workingDirectory") : undefined;
+    if (!agent || typeof wd?.set !== "function") return { ok: false, reason: "宿主不支持会话目录切换（ctx.workingDirectory.set 不可用）" };
+    const { listWorktrees } = await import("./core/gitops.js");
+    const { entries } = await listWorktrees(target);
+    const found = entries.find((e) => norm(e.root) === norm(target));
+    if (!found) return { ok: false, reason: `不是已注册的 worktree：${target}` };
+    if (found.locked) return { ok: false, reason: `副本被锁定（git worktree lock），宿主会拒绝切换到它：${target}` };
+    const cwd = await wd.set(agent, target);
+    const binding = await lifecycle.enter({ path: cwd ?? target, sessionId: exec.agent.session.header.id, cwd: cwd ?? target });
+    bustGuardContextCache();
+    return { ok: true, cwd: cwd ?? target, branch: binding.branch ?? null, boundaryMoved: false };
+  };
+
   // ---- component A/A': safety net + read-domain guard (deny/ask only) ----
   ctx.on("tools/pre-execute", async (exec, next) => {
+    lastExec = exec; // the tool layer needs the calling session, not a global
     const decision = await decideToolCall(exec, {
       protectedBranches: config.protectedBranches,
       readPolicy: config.readPolicy,
-      // Sandbox-mode capability probe (C9): when the host exposes the current
-      // sandbox mode, a bound session in danger-full-access gets the extra
-      // deny net; without the capability this degrades to a no-op (P1).
-      // Design §11. Async-resilient: hosts whose resolve() returns a Promise
-      // still work.
-      sandboxModeOf: async (header) => {
-        if (typeof ctx.fs?.sandboxMode === "string") return ctx.fs.sandboxMode;
-        if (typeof ctx.sandboxPolicy?.resolve === "function") {
-          const resolved = await ctx.sandboxPolicy.resolve({ session: { header } });
-          return resolved?.mode;
-        }
-        return undefined;
-      },
+      sandboxModeOf: sandboxModeOfHeader,
       approvalPolicyOf: effectiveApprovalPolicy,
+      hostCapabilitiesOf: async () => (await probeCaps(exec)),
     });
     if (decision.kind === "deny") return { kind: "deny", reason: decision.reason };
     if (decision.kind === "ask") return { kind: "ask", reason: decision.reason };
@@ -145,10 +179,15 @@ export function apply(ctx, config) {
 
   // ---- component D channel 3: session-start inject ----
   ctx.on("agent/session-start", async (agent, next) => {
+    const header = agent?.session?.header;
     const text = await sessionStartText({
-      cwd: agent?.session?.header?.cwd,
-      sessionId: agent?.session?.header?.id,
-      parentSession: agent?.session?.header?.parentSession ?? null,
+      cwd: header?.cwd,
+      sessionId: header?.id,
+      parentSession: header?.parentSession ?? null,
+      // issue #4: a session that cannot root itself at a copy must learn its
+      // real grade up front, not after two failed calls.
+      hostCaps: await probeHostCapabilities((k) => ctx.get(k)).catch(() => ({})),
+      sandboxMode: await sandboxModeOfHeader(header ?? {}),
     });
     const out = await next();
     if (text && typeof agent?.inject === "function") agent.inject(text);
@@ -186,6 +225,20 @@ export function apply(ctx, config) {
       const { mainRoot } = await listWorktrees(cwd).catch(() => ({ mainRoot: null }));
       return mainRoot ? loadSidecar(mainRoot) : {};
     },
+    // Issue #4: what can THIS host actually carry out (GUI workspace adoption,
+    // session directory move, sandbox mode). Absent capability => the copy
+    // degrades to "unavailable" instead of an unreachable recommendation.
+    // Sessions resolve their own mode: the tool layer carries the caller's
+    // session id (sessionOf), so the grade never reads another session's mode.
+    hostCapabilities: async (sessionId) => {
+      const exec = sessionId && lastExec?.agent?.session?.header?.id === sessionId ? lastExec : null;
+      const header = exec ? headerOfExec(exec) : null;
+      return { ...(await probeCaps(exec)), sandboxMode: header ? await sandboxModeOfHeader(header) : undefined };
+    },
+    // Issue #4: the one session move the guard can request — the host owns it
+    // (ctx.workingDirectory.set); the model can only ASK, because
+    // worktree_enter is a P4-gated tool (the user confirms first).
+    switchSession: (target) => switchSessionFor(lastExec, target),
   };
   for (const spec of toolSpecs(helpers)) {
     const def = typeof ctx.tools?.define === "function" ? ctx.tools.define(spec) : spec;

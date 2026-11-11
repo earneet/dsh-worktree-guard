@@ -256,6 +256,7 @@ M2: remove {path, confirm_remove, delete_branch}
 - **fail 策略**：原生插件 throw 即 fail-closed（宿主白送）；只读路径判断自身 catch 后放行（fail-open）；全局开关回退全 fail-open。不提供 hooks.json 形态（命令钩子 fail-open 语义混杂）。
 - **人闸**：authorize/allow 默认走 `ask_user_question`（P4）。**审批策略 `never` 的会话没有应答者**：宿主在弹出确认框之前就把 ask 判为拒绝（模型看到 `the user rejected tool`，非用户反悔）。round-13 起 pre-execute 探测 `approval.overrideOf(session) ?? config.policy`，命中 `never` 直接 deny 并给出人工通道（用户手动 push/合并、用户终端运行插件 CLI、切换会弹确认的预设），post-execute 按重探测的策略对仍被拒的 gated 工具补一行归因标记；CLI 授权是**仓库级 TTL**（`state.json`，全部会话/关联 worktree 生效），README 明示。**CLI 的 TTY 检查是启发而非边界**：程序化新建控制台（`Start-Process`/`conhost`/python `CREATE_NEW_CONSOLE`）同样 `isTTY=true`，因此 `authorize-main` 要求**键入本次显示的随机确认码**（60s 超时、未确认不落授权）。**等级诚实（P6）**：这是"运行期挑战-应答"，只证明有实体在该终端读码并键入；能读取控制台缓冲并注入输入的程序可重放——那已属任意代码执行（§14.3），而非本门能防的层级。结构级人闸仍只有宿主 ask 门；词法网对字面动词保持 fail-closed（仅纯只读检查链放行，见 §14.1）。
 - **沙箱联动**（C9，防御式实现）：宿主暴露 `ctx.fs.sandboxMode` / `ctx.sandboxPolicy.resolve` 时，绑定态 + danger-full-access → deny + 告警（worktree_* 生命周期工具豁免——P5 逃生口不可自堵）；能力缺失则无操作（P1 不假设宿主形态）。
+- **隔离等级（0.2.4，issue #4）**：`worktree_status` 的 `isolation` 是 P6 分级的机器可读版——`structural` 仅当"绑定且会话根就是副本 + 沙箱有围栏"；其余（含 danger-full-access、未绑定但有副本、绑定与根不一致、模式未知）一律 `disciplinary` 并给出 `isolation_reasons`。写边界之外的降级路径不会被称为隔离（§14.8）。
 - **allowlist 防注入**：`.git`、裸根、`*` 拒绝；路径校验。
 
 ## 12. Windows 适配
@@ -277,6 +278,12 @@ M2: remove {path, confirm_remove, delete_branch}
 5. 部署若挂 `dsh-pwsh-local`（无沙箱执行器）则 shell 无围栏——不假设执行器形态，README 明示。
 6. 审计 jsonl 同区可篡改（session 日志双写缓解）。
 7. C8/C9/C10 失败的降级路径见 §3——均不改变形态。
+8. **会话根指引的可达性（0.2.4，issue #4）**：写边界 = **会话创建时的 cwd**（`sandboxPolicy.resolve` → `workspaceRoot = session.header.cwd`），GUI 采纳目录的唯一入口是"添加工作区…（`directoryPicker.pick`）→ 在该工作区新建会话"；pre-execute 不能改写工具入参（C1），因此插件**不能**替会话改根。据此：
+   - "以副本为根新开会话"只在探测到 `workspaceRegistry` 时给出；无 `directoryPicker` 时改给 `dsh workspace … create` 路径式入口（依赖 profile 目录，探测不到则该条不出现）；
+   - `worktree_enter{switch_session:true}` 走宿主 `workingDirectory.set`（与宿主 `ctx.worktrees.create` 用的是同一个 API），**只移动会话目录、不移动写边界**——上下文里必须写明，措辞上不得暗示已获结构隔离；
+   - 全部能力缺失时只给一条"降级继续（纪律级）"，并把等级写进 create/status/会话启动注入；
+   - 被围栏的沙箱下，写到副本的绝对路径会被**沙箱**拒绝，故 deny 不再建议这种写法（追加一行 `FENCE_MARKER` 文案，与 deny 自身去重）。
+   边界：能力探测是**能力探测**（服务与方法的形状），不是对具体宿主 UI 版本的断言；`dsh workspace` 命令的参数以实际宿主为准。
 8. **CLI 确认码是运行期挑战，非身份/结构边界**：能创建/控制真实 pty 并读取控制台缓冲、注入键盘输入的程序可以重放展示码（与 §14.3 的任意代码执行同级）；结构级人闸仍只有宿主 ask 门。
 
 ## 15. 测试策略

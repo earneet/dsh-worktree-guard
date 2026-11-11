@@ -8,6 +8,7 @@ import { norm, isUnder, classifyTarget, extractAbsolutePaths, extractQuotedAbsol
 import { matchesMainWhitelist } from "./sidecar.js";
 import { DEFAULT_PROTECTED_BRANCHES as PROTECTED_DEFAULT, DEFAULT_BRANCH_PREFIX } from "./constants.js";
 import { manualOrCliHint } from "./cli-path.js";
+import { FENCE_MARKER } from "./capabilities.js";
 
 // ---------- context assembly (caller: guard.js) ----------
 
@@ -76,7 +77,7 @@ export function decideWrite(rawPath, baseDir, ctx, binding, auth = {}) {
   if (cls.kind === "worktree" && (!binding || norm(cls.root) !== norm(binding.worktree))) {
     const next = binding
       ? `跨副本写入被禁止；本会话绑定副本 ${binding.worktree}，请用解析到本副本内的路径写入。`
-      : `跨副本写入一律禁止（无论会话是否绑定）。如需操作副本 ${cls.name}，请以该副本为根新开会话。`;
+      : `跨副本写入一律禁止（无论会话是否绑定）。结构隔离只能先让会话根落在该副本上——以该副本为根新开会话；在此之前"绝对路径写副本"会与${FENCE_MARKER}的沙箱冲突。`;
     return deny("write", rawPath, `目标落在${binding ? "其他" : ""}副本 ${cls.name}`, next);
   }
   if (!binding) return allow(); // P1: unbound => host sandbox semantics

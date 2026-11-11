@@ -94,8 +94,12 @@ test("R5-3 channel 3 honors parentSession (inherited rooted session gets guidanc
 });
 
 test("R5-4 stale hint is silent right after create (fresh last_active)", async () => {
+  // issue #4 (0.2.4) deliberately ADDS an up-front isolation notice when a copy
+  // exists and this session is not in it; the stale-record hint stays silent.
   const t = await sessionStartText({ cwd: repo, sessionId: "fresh" });
-  assert.equal(t, null);
+  assert.notEqual(t, null);
+  assert.match(t, /隔离等级：纪律/);
+  assert.doesNotMatch(t, /长期未收尾/);
 });
 
 test("R5-5 m1: tool errors keep the three-part contract (structured { error } + render)", async () => {

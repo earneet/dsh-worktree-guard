@@ -6,16 +6,17 @@
 
 ## 安装形态（本轮起）
 
-profile 依赖从 registry 版本号改为 `link:`：
+profile 依赖从 registry 版本号改为**本地 tarball 的 `file:` 安装**（与 profile 内 `dsh-vision-image-cap` 同模式，是宿主包管理器认可并保留的形态）：
 
 ```jsonc
 // ~/.dsh/profiles/desktop/package.json
-"dsh-worktree-guard": "link:F:/workspace_2/dsh-worktree-guard"
+"dsh-worktree-guard": "file:./plugins/dsh-worktree-guard-0.2.4.tgz"
 ```
 
-- `node_modules/dsh-worktree-guard` 是指向本仓库的 **junction**：仓库即安装，仓库更新后**重启 DSH** 即生效（无需再手工同步文件）。
-- 插件依赖 `@deepseek-ai/schemastery` 经 junction 的 realpath 从**仓库自身** `node_modules` 解析（T0-S0.4 验证）。
-- 注意：profile 根下手工存在的 `@deepseek-ai/{schemastery,cosmokit}`、`@standard-schema/spec` 不在 pnpm 依赖树里，跑 `pnpm install` 会被挪进 `node_modules/.ignored`（首次 link 安装时发生过，已挪回）。若将来执行了 profile 级 pnpm 命令，检查这三个包是否还在。
+- `node_modules/dsh-worktree-guard` 是 pnpm 从 tarball 装出的**实体目录**（非 junction），版本即 tarball 版本。
+- 依赖 `@deepseek-ai/schemastery` 由 pnpm 一并装入 store（T0-S0.4 验证解析）。
+- **更新流程**：仓库 `npm pack` → 复制 tgz 到 `~/.dsh/profiles/desktop/plugins/` → package.json 的 `file:` 指向新文件名 → 宿主自带 pnpm `install` → `npm run smoke:installed`（S0.2/S0.5 会自动发现 tarball 落后于仓库）。
+- ⚠️ **不要用 `link:` 安装**：宿主的插件/包管理器会周期性"修复" profile 依赖，把 link: junction 回退成 registry 实体目录（本轮实测：package.json、lockfile、node_modules 三处全部被回退到 0.2.3）；且首次 link 替换窗口内发生了仓库 `.git` 顶层被删事故（见下）。`file:` tarball 是该环境下唯一稳定的手工本地安装形态。
 
 ## 用例设计与结果（2026-11-11，安装版 0.2.4，39/39 通过）
 
@@ -100,9 +101,10 @@ profile 依赖从 registry 版本号改为 `link:`：
 - 发布新版本或更新 profile 安装后：先 `npm test`（源码层），再 `npm run smoke:installed`（安装层），两者都绿才算完成。
 - 冒烟脚本与本文档同仓库提交；用例增删时两处同步改。
 
-## 事故记录（2026-11-11，link 安装当天）
+## 事故记录（2026-11-11，安装切换当天，两起）
 
-- 现象：执行 `pnpm add dsh-worktree-guard@link:…`（registry 版 → junction 替换）后不久，本仓库 `.git` 顶层文件（HEAD/config/index/hooks/info/logs 等）被删除；`objects/`、`refs/`（含 `refs/heads/master` 与全部 tags）、`ORIG_HEAD` 幸存。从幸存快照重建 HEAD/config 并 `git reset` 后历史完整恢复（`git fsck` 仅 dangling——历史重写前的旧提交，属预期）。
-- 已排除：`pnpm install --offline` 对 junction 无害（受控实验：.git 条目前后不变）；冒烟脚本仅操作临时仓库。
-- 未定论的头号嫌疑：`pnpm add` 的"包替换清理"经新建 junction 写穿到仓库（被并发 git 进程中断于 `objects/` 之前）。**若再次发生，即确认该路径，改用 `file:<tgz>` 安装并废弃 link。**
-- 防线：`git bundle create <路径>.bundle --all` 的本地备份（本次已建 `F:\workspace_2\wtg-local-backup-20261111.bundle`）；以及尽早推送本地提交。
+**① 仓库 `.git` 顶层被部分删除。** `pnpm add dsh-worktree-guard@link:…`（registry 版 → junction 替换）后不久，`.git` 的 HEAD/config/index/hooks/info/logs 等被删；`objects/`、`refs/`（含 `refs/heads/master` 与全部 tags）、`ORIG_HEAD` 幸存。从幸存快照重建 HEAD/config 并 `git reset`，历史完整恢复（`git fsck` 仅 dangling，属历史重写预期）。已排除：`pnpm install --offline` 对稳定 junction 无害（受控实验）；冒烟脚本仅操作临时仓库。头号嫌疑：**包替换清理经 junction 写穿**，被并发 git 进程中断于 `objects/` 之前（未定论；若复现即坐实，届时彻底弃用任何指向开发仓库的链接安装）。
+
+**② link: 安装被宿主回退。** link: 装好并通过冒烟后，profile 的 package.json、pnpm-lock、node_modules 三处在数分钟内被回退成 registry 0.2.3 实体目录（宿主插件/包管理器的周期性 reconciliation；回退动作与事故①的替换流程同类）。处置：改用 `file:./plugins/*.tgz` 安装（宿主认可的本地形态，`dsh-vision-image-cap` 先例），重跑冒烟 39/39。
+
+**防线**：`git bundle create <路径>.bundle --all` 本地备份（事故后已建）；尽早推送本地提交；改动手工 profile 状态后跑 `npm run smoke:installed` 确认未被回退。

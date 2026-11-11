@@ -278,12 +278,12 @@ M2: remove {path, confirm_remove, delete_branch}
 5. 部署若挂 `dsh-pwsh-local`（无沙箱执行器）则 shell 无围栏——不假设执行器形态，README 明示。
 6. 审计 jsonl 同区可篡改（session 日志双写缓解）。
 7. C8/C9/C10 失败的降级路径见 §3——均不改变形态。
-8. **会话根指引的可达性（0.2.4，issue #4）**：写边界 = **会话创建时的 cwd**（`sandboxPolicy.resolve` → `workspaceRoot = session.header.cwd`），GUI 采纳目录的唯一入口是"添加工作区…（`directoryPicker.pick`）→ 在该工作区新建会话"；pre-execute 不能改写工具入参（C1），因此插件**不能**替会话改根。据此：
-   - "以副本为根新开会话"只在探测到 `workspaceRegistry` 时给出；无 `directoryPicker` 时改给 `dsh workspace … create` 路径式入口（依赖 profile 目录，探测不到则该条不出现）；
-   - `worktree_enter{switch_session:true}` 走宿主 `workingDirectory.set`（与宿主 `ctx.worktrees.create` 用的是同一个 API），**只移动会话目录、不移动写边界**——上下文里必须写明，措辞上不得暗示已获结构隔离；
-   - 全部能力缺失时只给一条"降级继续（纪律级）"，并把等级写进 create/status/会话启动注入；
-   - 被围栏的沙箱下，写到副本的绝对路径会被**沙箱**拒绝，故 deny 不再建议这种写法（追加一行 `FENCE_MARKER` 文案，与 deny 自身去重）。
-   边界：能力探测是**能力探测**（服务与方法的形状），不是对具体宿主 UI 版本的断言；`dsh workspace` 命令的参数以实际宿主为准。
+8. **会话根指引的可达性（0.2.4，issue #4；按用户反馈重构为会话内采用）**：写边界 = **会话创建时的 cwd**（`sandboxPolicy.resolve` → `workspaceRoot = session.header.cwd`）。初版（未发布）曾按"GUI 采纳工作区→新建会话"给指引；用户否决：目标是让 Agent 正确工作在对应分支，不能要求人类先切工作区。0.2.4 起：
+   - 嵌套在会话写边界之内的副本（默认布局）由 `worktree_enter` **就地采用**（`mode:"adopted"`）：绑定立即生效，write/edit 用 `.worktrees/<名>/` 前缀路径（边界之内，沙箱接受），落在主 checkout 的相对路径 deny 并附**副本前缀重试路径**（C1：不能改写入参，由模型重试）；shell 的相对副本词（含 `bash -c 'cd <副本> && …'` 的相对 cd）在**判定视图**里读成副本路径，post-execute 留采用标记（P3）；受保护分支 push、跨副本写、状态区/`.git` 写、C9 danger-full-access 网全部照旧；
+   - 宿主自己的 worktree 服务存在时（`ctx.worktrees.restore`）改走 `switch_session:true`（宿主 `workingDirectory.set`，与宿主 `worktrees.create` 同一 API）；
+   - 副本在会话写边界**之外**且沙箱有围栏（已探测的 workspace-write/read-only）时，deny 追加"副本在会话写边界之外"——此时绝对路径写副本才会真被沙箱拒绝；嵌套副本不适用该行；
+   - 采用模式隔离等级恒为 `disciplinary`（`adopted-copy-not-root`）：守卫路由的是工作，不是沙箱边界，诚实分级（P6）。
+   边界：改写只发生在判定视图（执行仍是模型原命令）；能力探测是服务形状探测，不断言具体宿主 UI 版本。
 8. **CLI 确认码是运行期挑战，非身份/结构边界**：能创建/控制真实 pty 并读取控制台缓冲、注入键盘输入的程序可以重放展示码（与 §14.3 的任意代码执行同级）；结构级人闸仍只有宿主 ask 门。
 
 ## 15. 测试策略

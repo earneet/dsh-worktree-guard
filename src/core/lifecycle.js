@@ -102,8 +102,10 @@ export async function create(opts) {
   return { worktree: wtPath, branch, base, mainRoot };
 }
 
-/** enter: bind THIS session (rooted check happens at the tool layer for models). */
-export async function enter({ path, sessionId, cwd }) {
+/** enter: bind THIS session to a copy (rooted). `mode:"adopted"` records the
+ *  issue-#5 adoption (session root is not the copy; the guard routes the work
+ *  into it). The root check itself happens in the tool layer / guard. */
+export async function enter({ path, sessionId, cwd, mode = null }) {
   const target = resolve(cwd, path ?? ".");
   const { mainRoot: mainFromCwd } = await listWorktrees(cwd);
   const { entries } = await listWorktrees(target);
@@ -111,10 +113,16 @@ export async function enter({ path, sessionId, cwd }) {
   if (!found) throw new Error(`不是已注册的 worktree：${target}`);
   if (norm(target) === norm(mainFromCwd)) throw new Error("目标是主 checkout：绑定对象必须是副本（以副本为根开会话即可，无需 enter）");
   const cd = await commonDir(target);
-  const binding = { worktree: norm(target), branch: found.branch ?? null, base: null, entered_at: new Date().toISOString() };
+  const binding = {
+    worktree: norm(target),
+    branch: found.branch ?? null,
+    base: null,
+    ...(mode === "adopted" ? { mode: "adopted", adopted_from: norm(cwd) } : {}),
+    entered_at: new Date().toISOString(),
+  };
   await writeBinding(cd, sessionId, { ...binding, source: "self" });
   await updateState(cd, { last_active: binding.worktree });
-  await appendAudit(cd, { type: "enter", session: sessionId, worktree: binding.worktree });
+  await appendAudit(cd, { type: "enter", session: sessionId, worktree: binding.worktree, mode: binding.mode ?? "rooted" });
   return binding;
 }
 
@@ -215,8 +223,10 @@ export async function status({ cwd, sessionId = null }) {
     .map((b) => ({ b, s: bindingStaleness(b, roots, now) }))
     .filter(({ s }) => s.stale)
     .map(({ b, s }) => ({ sessionId: b.sessionId, worktree: b.worktree, reason: s.reason }));
-  const mine = sessionId ? bindings.find((b) => b.sessionId === sessionId) ?? null : null;
-  const rooted = mine ? norm(cwd) === norm(mine.worktree) : false;
+  const mine = sessionId ? bindings.find((b) => b.sessionId === sessionId) ?? null : null;  const rooted = mine ? norm(cwd) === norm(mine.worktree) : false;
+  // issue #5: an adopted binding routes the session's work into the copy while
+  // the session root stays the main checkout; report it as its own mode.
+  const adopted = mine?.mode === "adopted" && !rooted;
   // Informational-only record: last_active may point at a copy that was deleted
   // after its binding was already recycled. It is stale when the directory is
   // gone AND no binding still references it; prune clears it in that case.
@@ -225,7 +235,7 @@ export async function status({ cwd, sessionId = null }) {
     && !bindings.some((b) => norm(b.worktree) === norm(lastActive))
     && !(await exists(lastActive));
   return {
-    mode: mine ? (rooted ? "rooted" : "repo-rooted") : "unbound",
+    mode: mine ? (rooted ? "rooted" : adopted ? "adopted" : "repo-rooted") : "unbound",
     binding: mine, copies, stale_bindings,
     stale_state_hint: lastActiveStale ? lastActive : null,
     orphan_dirs: await orphanDirs(mainRoot, entries),

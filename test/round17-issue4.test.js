@@ -67,33 +67,35 @@ test("R17-C3 叙事文案点名等级，副本已存在但未绑定时不得暗�
 
 // ---------- pure: capability-graded next steps ----------
 
-test("R17-C4 会话根路径按宿主能力分级；探不到就不给建议", () => {
+test("R17-C4 会话根路径按宿主能力分级；0.2.4 起会话内采用永远排第一（issue #5）", () => {
   assert.equal(sessionRootPath({ workspaceRegistry: true }), "gui-workspace");
   assert.equal(sessionRootPath({ workingDirectory: true }), "cwd-move");
   assert.equal(sessionRootPath({}), "unavailable");
-  // unavailable: exactly ONE honest fallback, and it names its grade
+  // issue #5: no human workspace ceremony first — adoption inside the session is
+  // the first step on EVERY host; the structural upgrade is the optional second.
   const fallback = nextIsolationSteps({});
-  assert.equal(fallback.length, 1);
-  assert.match(fallback[0], /降级继续/);
-  assert.match(fallback[0], /绝对路径/);
+  assert.equal(fallback.length, 2);
+  assert.match(fallback[0], /worktree_enter/);
+  assert.match(fallback[0], /无需新开工作区/);
+  assert.match(fallback[1], /真结构隔离（可选）/);
 });
 
-test("R17-C5 GUI 宿主：先给宿主侧新开副本会话；并保留会话内切换（且说明写边界不变）", () => {
+test("R17-C5 GUI 宿主：会话内采用仍排第一，宿主侧新开副本会话是可选升级", () => {
   const steps = nextIsolationSteps({ workspaceRegistry: true, workingDirectory: true });
-  assert.match(steps[0], /添加工作区/);
-  assert.match(steps[1], /switch_session/);
-  assert.match(steps[1], /写边界仍按会话创建时的 cwd 计/);
-  // no GUI picker: the path-typed route is the only way in, and it says so
+  assert.match(steps[0], /worktree_enter/);
+  assert.match(steps[1], /添加工作区/);
+  // no GUI picker: the path-typed route is the only way to the optional upgrade
   const noPicker = withPathTypedRoute({ workspaceRegistry: true, directoryPicker: false, profilesDir: true });
-  assert.equal(noPicker.length, 2);
+  assert.equal(noPicker.length, 3);
   assert.match(noPicker[0], /dsh workspace/);
   assert.match(noPicker[0], /profile 目录存在/);
+  assert.match(noPicker[1], /worktree_enter/);
 });
 
 test("R17-C6 fence 提示只说一次事实：写边界不含副本", () => {
   const line = fenceRecoveryLine({ workingDirectory: true });
   assert.match(line, new RegExp(FENCE_MARKER));
-  assert.match(line, /switch_session|worktree_enter|降级/);
+  assert.match(line, /worktree_enter/);
 });
 
 test("R17-C7 宿主探测只认实际存在的服务方法（缺能力 => 不给不可达路径）", async () => {
@@ -113,7 +115,9 @@ test("R17-C7 宿主探测只认实际存在的服务方法（缺能力 => 不给
     [none.workspaceRegistry, none.directoryPicker, none.workingDirectory, none.worktreeService],
     [false, false, false, false],
   );
-  assert.equal(nextIsolationSteps(none).length, 1);
+  // issue #5: adoption itself needs no host capability — it is always offered,
+  // and "no host says anything" only costs the optional structural upgrade.
+  assert.match(nextIsolationSteps(none)[0], /worktree_enter/);
 });
 
 // ---------- deny path under a fenced sandbox ----------
@@ -124,18 +128,20 @@ const ctx = makeContext({
   worktrees: [{ root: WT_A, name: "worktree-alpha" }, { root: WT_B, name: "worktree-beta" }],
 });
 
-test("R17-D1 跨副本写入的 next 不再许诺'绝对路径写副本'，而给出结构路径", () => {
+test("R17-D1 跨副本写入的 next 不再许诺'绝对路径写副本'，而给出采用路径（issue #5）", () => {
   const d = decideWrite(`${WT_A}/src/a.ts`, MAIN, ctx, null, {});
   assert.equal(d.kind, "deny");
-  assert.match(d.reason, /以该副本为根新开会话/);
-  assert.doesNotMatch(d.reason, /请以该副本为根新开会话后/);
+  assert.match(d.reason, /worktree_enter/);
+  assert.match(d.reason, /采用模式/);
+  assert.doesNotMatch(d.reason, /以该副本为根新开会话后/);
 });
 
-test("R17-D2 绑定会话写主 checkout：有围栏时 deny 追加一行 fence 提示；同一 deny 不重复", async () => {
+test("R17-D2 写到会话够不着的副本：deny 追加 fence 行且不重复；写主 checkout 不加", async () => {
   const repo = await makeRepo();
   try {
-    const created = await lifecycle.create({ taskName: "r17 fence", cwd: repo });
-    await lifecycle.enter({ path: created.worktree, sessionId: "r17-fence", cwd: created.worktree });
+    const mine = await lifecycle.create({ taskName: "r17 fence", cwd: repo });
+    const other = await lifecycle.create({ taskName: "r17 other", cwd: repo });
+    await lifecycle.enter({ path: mine.worktree, sessionId: "r17-fence", cwd: mine.worktree });
     let execN = 0;
     const mkExec = (file_path) => {
       execN += 1;
@@ -143,19 +149,23 @@ test("R17-D2 绑定会话写主 checkout：有围栏时 deny 追加一行 fence 
         name: "write",
         arguments: { file_path },
         callId: `r17-${execN}`,
-        agent: { session: { header: { id: "r17-fence", cwd: created.worktree, parentSession: null } } },
+        agent: { session: { header: { id: "r17-fence", cwd: mine.worktree, parentSession: null } } },
       };
     };
-    const caps = { workspaceRegistry: true, directoryPicker: true };
+    const caps = { workspaceRegistry: true, directoryPicker: true, sandboxMode: "workspace-write" };
     const opts = { sandboxModeOf: () => "workspace-write", hostCapabilitiesOf: async () => caps };
-    // a bound session writing main: the fence line explains WHY the usual
-    // "absolute path into the copy" advice cannot work under a fenced sandbox.
-    const d = await decideToolCall(mkExec(join(repo, "src", "a.ts")), opts);
+    // the OTHER copy is outside this session's write boundary (root = my copy):
+    // the fence line names the truth — an absolute-path retry would be refused.
+    const d = await decideToolCall(mkExec(join(other.worktree, "x.ts")), opts);
     assert.equal(d.kind, "deny", d.reason);
     assert.match(d.reason, new RegExp(FENCE_MARKER));
     assert.equal(d.reason.split(FENCE_MARKER).length - 1, 1, "fence line appears exactly once");
-    // danger-full-access has no fence: nothing to add (the usual copy holds)
-    const noFence = await decideToolCall(mkExec(join(repo, "src", "b.ts")), { sandboxModeOf: () => "danger-full-access", hostCapabilitiesOf: async () => ({}) });
+    // a main-checkout deny is NOT a copy-reachability problem: no fence line
+    const mainWrite = await decideToolCall(mkExec(join(repo, "src", "a.ts")), opts);
+    assert.equal(mainWrite.kind, "deny", mainWrite.reason);
+    assert.doesNotMatch(mainWrite.reason, new RegExp(FENCE_MARKER));
+    // danger-full-access has no fence at all: nothing to add
+    const noFence = await decideToolCall(mkExec(join(other.worktree, "y.ts")), { sandboxModeOf: () => "danger-full-access", hostCapabilitiesOf: async () => ({ sandboxMode: "danger-full-access" }) });
     assert.equal(noFence.kind, "deny", noFence.reason);
     assert.doesNotMatch(noFence.reason, new RegExp(FENCE_MARKER));
   } finally {
@@ -183,7 +193,11 @@ function mkExec(tool, args, cwd, sessionId) {
 }
 function helpersFor(cwd, caps) {
   return {
-    sessionOf: () => ({ id: "r17-s", cwd }),
+    // session identity comes from exec (a hardcoded id silently mis-bound tests)
+    sessionOf: (exec) => {
+      const h = exec?.agent?.session?.header ?? {};
+      return { id: h.id, cwd: h.cwd ?? cwd, parentSession: null };
+    },
     config: async () => ({}),
     hostCapabilities: async () => caps,
     switchSession: async () => ({ ok: false, reason: "not wired in this test" }),
@@ -208,23 +222,27 @@ test("R17-I1 create 文案：宿主无 GUI 入口时不说'以副本为根新开
   const text = create.output.render({}, out)[0].text;
   assert.match(text, /隔离等级：纪律/);
   assert.doesNotMatch(text, /下一步（推荐）：以副本为根新开会话/);
-  assert.match(text, /降级继续/);
+  // issue #5: the first step is the in-session adoption, not a workspace ceremony
+  assert.match(text, /worktree_enter/);
+  assert.match(text, /无需新开工作区/);
 });
 
-test("R17-I2 enter 拒绝时按能力分级；switch_session 走宿主失败则给可达路径", async () => {
+test("R17-I2 enter：0.2.4 起会话内直接采用副本（issue #5），不再要求先切工作区", async () => {
   const specs = toolSpecs(helpersFor(repo, { workspaceRegistry: true, directoryPicker: true, sandboxMode: "workspace-write" }));
   const enter = specOf(specs, "worktree_enter");
   const created = await lifecycle.create({ taskName: "r17 alpha", cwd: repo });
-  const refused = await enter.execute({ path: created.worktree }, mkExec("worktree_enter", {}, repo, "r17-s"));
-  assert.equal(refused.bound, false);
-  const text = enter.output.render({}, refused)[0].text;
-  assert.match(text, /添加工作区/);
-  assert.doesNotMatch(text, /以 .* 为会话根新开会话（推荐）/);
-  // explicit in-session switch, but this host seam refuses -> same graded guidance
-  const switched = await enter.execute({ path: created.worktree, switch_session: true }, mkExec("worktree_enter", {}, repo, "r17-s"));
-  assert.equal(switched.bound, false);
-  assert.equal(switched.switched, false);
-  assert.match(enter.output.render({}, switched)[0].text, /添加工作区/);
+  const adopted = await enter.execute({ path: created.worktree }, mkExec("worktree_enter", {}, repo, "r17-s"));
+  assert.equal(adopted.bound, true);
+  assert.equal(adopted.adopted, true);
+  assert.equal(adopted.mode, "adopted");
+  assert.equal(adopted.isolation, "disciplinary");
+  const text = enter.output.render({}, adopted)[0].text;
+  assert.match(text, /采用模式/);
+  assert.match(text, /cd <副本>/);
+  // explicit host switch that the host refuses -> adoption still binds the work
+  const switched = await enter.execute({ path: created.worktree, switch_session: true }, mkExec("worktree_enter", {}, repo, "r17-s2"));
+  assert.equal(switched.bound, true);
+  assert.equal(switched.adopted, true);
 });
 
 test("R17-I3 status 报告隔离等级 + 原因 + 可达动作", async () => {
@@ -234,6 +252,8 @@ test("R17-I3 status 报告隔离等级 + 原因 + 可达动作", async () => {
   assert.equal(out.isolation, "disciplinary");
   assert.ok(out.isolation_reasons.includes("unbound-with-copies"));
   assert.ok(out.next_actions.length >= 1);
+  // issue #5: the in-session route is listed first — no human workspace ceremony
+  assert.match(out.next_actions[0], /worktree_enter/);
   assert.match(status.output.render({}, out)[0].text, /隔离：disciplinary/);
   // danger-full-access: the grade can never be structural (no fence at all)
   const risky = toolSpecs(helpersFor(repo, { sandboxMode: "danger-full-access" }));
@@ -253,9 +273,11 @@ test("R17-I4 会话启动注入：存在未绑定副本时点名等级与可达�
   const lines = text.split("\n");
   assert.ok(lines.length <= 3, text);
   assert.match(text, /隔离等级：纪律/);
-  assert.match(text, /添加工作区/);
-  // fenced sandbox: the notice must not prescribe the write the sandbox refuses
-  assert.match(text, new RegExp(FENCE_MARKER));
+  assert.match(text, /worktree_enter/);
+  // fenced sandbox + nested copy: the interim rule points at adoption, not at
+  // the absolute-path write (that is the issue-#4 trap, now solved by adoption)
+  assert.match(text, /采用副本/);
+  assert.match(text, /\.worktrees\//);
   // danger-full-access: the usual absolute-path advice holds (no fence)
   const risky = await sessionStartText({ cwd: repo, sessionId: "r17-risky", hostCaps: {}, sandboxMode: "danger-full-access" });
   assert.ok(risky);

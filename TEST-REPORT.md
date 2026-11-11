@@ -1,6 +1,18 @@
 # dsh-worktree-guard 完整功能测试报告
 
-日期：2026-11-11 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-17 后全量 221/221）**
+日期：2026-11-11 ｜ 环境：Windows / Node v24.15.0 / git 2.45.1.windows.1 ｜ 总结果：**全部通过（round-18 后全量 229/229）**
+
+## 会话内采用副本（round-18，0.2.4，用户反馈）
+
+用户否决了上一轮修复（issue #4 初版，未发布）的"先把工作空间落到副本目录才能绑定"：目标是让 Agent 正确工作在对应分支，而不是要求人类先切工作区。另经 GitHub 复查：无新增 issue（#1–#4 仍为全部）。
+
+- **宿主/git 契约实证**：写边界 = 会话创建时的 cwd；嵌套副本（`<repo>/.worktrees/…`）在边界之内——实测相对路径写副本成功、主 checkout 原文件不受影响；`git -C <相对副本路径>` 从主根可达；`bash -c 'cd <相对副本> && …'` 在沙箱内可执行。C1：pre-execute **不能**改写工具入参（初版的 adoptFileArgs 试图"重定向"写入路径——宿主会执行原始参数而标记却声称落在副本，不诚实且危险，已在实现前移除）。
+- **新增 [src/core/adopt.js](src/core/adopt.js)**（纯函数）：`resolveBindingMode`（none / rooted / **adopted** / unadoptable / stale；宿主自有 worktree 服务时不采用、由宿主 restore+enter）、`copyRelation`（inside/contains/rel，win/posix 分隔符归一）、`adoptWord`（仅边界安全的词级改写：相对副本词→副本路径、`cd <副本>`→副本根；绝不发明 `..` 逃逸/不改绝对路径/URL/flag）、`adoptPathArg`（工具路径参数的同款映射，供 deny 文案生成重试路径）。
+- **绑定与生命周期**：`lifecycle.enter` 支持 `mode:"adopted"`（记录 `adopted_from`，审计 `mode` 字段）；`status` 新增 `adopted` 模式；`standingLine` 采用模式版本（说明前缀路径与 `bash -c 'cd'` 用法）。
+- **worktree_enter 重构**：会话根不是副本时——宿主有 worktree 服务（或显式 `switch_session:true`）→ 宿主 `workingDirectory.set` 切换；否则副本在会话根之内 → **就地采用**（不再拒绝）；副本不在之内 → 拒绝并给出宿主侧路径（不允许无边界改写）。rooted 会话行为不变。
+- **守卫（判定视图，不改执行）**：采用绑定下写自己副本放行、写主 checkout deny 且**附副本前缀重试路径**（单轮可执行）、跨副本仍 deny；shell 相对副本词先读成副本路径再判定（受保护分支 push 仍拦），post-execute 留"采用模式"标记（P3）；C9 danger-full-access 网不因采用解锁；fence 行收缩为只在"副本在会话写边界之外"且围栏已探测时出现（嵌套副本不适用——之前的说法不属实）。
+- **文案**：`nextIsolationSteps` 会话内采用永远排第一（GUI/新会话降为可选结构升级）；会话启动注入（围栏）改为"先采用，再用 `.worktrees/<名>/` 前缀写"。
+- **测试**：新增 [test/round18-issue5.test.js](test/round18-issue5.test.js)（8 项：模式分类、词级安全改写、等级、enter 采用、守卫放行/拒绝/重试路径/标记、C9 不解锁、边界外拒绝、rooted 不变）；round-17 按新语义更新（helpers 的 sessionOf 改为从 exec 取 id——此前硬编码导致误绑定；R17-D2 改为"够不着的副本"才加 fence 行）。全量 `npm test` → **229/229 pass**；`npm run verify:package` 通过（0.2.4）。
 
 ## 可达性分级与隔离等级（round-17，issue #4）
 
@@ -107,8 +119,9 @@ GitHub issue #1（审批策略 `never` 的会话中 main 推送死路 + shell �
 | 7. 引号文本回归（round-15） | 新增 [test/round15-quoted-text.test.js](test/round15-quoted-text.test.js)（11 项） | ✅ 11/11 |
 | 8. 审查修复回归（round-16） | 新增 [test/round16-review.test.js](test/round16-review.test.js)（15 项） | ✅ 15/15 |
 | 9. 可达性分级与隔离等级（round-17，issue #4） | 新增 [test/round17-issue4.test.js](test/round17-issue4.test.js)（14 项） | ✅ 14/14 |
+| 10. 会话内采用副本（round-18，用户反馈） | 新增 [test/round18-issue5.test.js](test/round18-issue5.test.js)（8 项） | ✅ 8/8 |
 
-全量回归：`npm test` → **221/221 pass**（round-7/8/13/14/15/16/17 已并入套件）。
+全量回归：`npm test` → **229/229 pass**（round-7/8/13/14/15/16/17/18 已并入套件）。
 
 ## 守卫网覆盖（G 系列，经 decideToolCall 实测）
 

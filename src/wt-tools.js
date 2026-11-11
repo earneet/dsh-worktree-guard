@@ -15,6 +15,7 @@ import { resolve as resolvePath, join as joinPath } from "node:path";
 import { norm } from "./core/paths.js";
 import { CLI_PATH } from "./core/cli-path.js";
 import { isolationGrade, isolationNote, isolationReasons, withPathTypedRoute } from "./core/capabilities.js";
+import { resolveBindingMode, BINDING_ADOPTED } from "./core/adopt.js";
 
 const blocks = (text) => [{ type: "text", text }];
 
@@ -81,9 +82,9 @@ const S = {
   err: () => ({ type: "string", description: "three-part failure text when the operation failed" }),
 };
 
-const createDesc = `Create an isolated git worktree copy (branch worktree-<slug>) for a task. WHEN: starting a task that should not touch the main checkout. AFTER: open a NEW session rooted at the returned worktree path (that session's sandbox then anchors to the copy). The task description is stored in .dsh/task-brief.md inside the copy for the next session. Do NOT call for tasks meant to edit the main checkout directly.`;
+const createDesc = `Create an isolated git worktree copy (branch worktree-<slug>) for a task. WHEN: starting a task that should not touch the main checkout. AFTER: bind THIS session with worktree_enter{path} (adoption — no new session or workspace needed): write/edit then uses .worktrees/<name>/-prefixed paths inside the copy, and shell work uses bash -c 'cd <copy> && …' (a relative cd). A new session rooted at the copy remains the optional structural upgrade. The task description is stored in .dsh/task-brief.md inside the copy. Do NOT call for tasks meant to edit the main checkout directly.`;
 
-const enterDesc = `Bind the CURRENT session to a worktree copy. Only meaningful when this session's working directory is already the worktree (rooted); a repo-root session will be refused with guidance. Call worktree_status first if unsure.`;
+const enterDesc = `Bind the CURRENT session to a worktree copy so its work happens on that copy's branch. Nested copies (under the main checkout) are ADOPTED IN PLACE — no new session or workspace needed: write/edit and searches then land inside the copy, and shell work uses bash -c 'cd <copy> && …' (a relative cd the sandbox allows; it is the ONLY boundary-safe way when the session root is not the copy). When the host owns a worktree service, the session is switched there instead. Call worktree_status if unsure.`;
 
 const exitDesc = `Unbind the current session from its worktree. action:"keep" keeps the copy; action:"remove" also removes it and deletes its branch when merged into base — the always-safe way to finish (a dirty copy is still refused; guard-owned .dsh/ files and links never count as dirty). Your own binding never blocks your own exit.`;
 
@@ -174,44 +175,67 @@ export function toolSpecs(helpers) {
       },
       output: {
         schema: S.obj({
-          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), switched: S.bool(), isolation: S.str(), error: S.err(),
+          bound: S.bool(true), worktree: S.str(), branch: S.str(), reason: S.str(), guidance: S.str(), switched: S.bool(),
+          adopted: S.bool(), mode: S.str(), isolation: S.str(), error: S.err(),
         }, ["bound"]),
         render: (_a, v) => renderError(v) ?? blocks(
           v.bound
-            ? `已绑定（rooted）：本会话根 = 副本 ${v.worktree}。读写路径必须解析到本副本内。`
-            : `[worktree-guard] 已拒绝绑定：本会话根不是目标副本。\n原因：repo-rooted 绑定会造成读写分裂（读主根世界、写被逐次拦截）。\n下一步：${v.guidance ?? "以目标副本为会话根新开会话（推荐），获得结构性隔离。"}`,
+            ? (v.adopted || v.mode === "adopted"
+              ? `已绑定（采用模式）：副本 ${v.worktree}（分支 ${v.branch ?? "?"}）。本会话根仍是 ${v.session_root ?? "主 checkout"}：write/edit 与搜索按副本内落盘，bash 用 bash -c 'cd <副本> && …'。隔离等级：纪律（沙箱边界未移动）。`
+              : `已绑定（rooted）：本会话根 = 副本 ${v.worktree}。读写路径必须解析到本副本内。`)
+            : `[worktree-guard] 已拒绝绑定：${v.reason ?? "本会话根不是目标副本"}。\n原因：${v.diagnosis ?? "绑定前置条件不满足"}。\n下一步：${v.guidance ?? "调用 worktree_status 盘点副本"}`,
         ),
       },
       async execute(args, exec) {
         const s = helpers.sessionOf(exec);
         const caps = await hostCapabilities(helpers, exec);
-        // A repo-rooted session must not bind: without structural isolation it
-        // would read the main checkout's world while every write gets denied,
-        // i.e. a permanent deny loop. Refuse and hand back guidance instead
-        // (design §8). Issue #4: the guidance is capability-graded, and the
-        // host-driven session move (ctx.workingDirectory.set) is offered as the
-        // one action that IS reachable from inside a session.
         const target = resolvePath(s.cwd, args.path ?? ".");
+        // Issue #5: the session root is not the copy. That is now the NORMAL
+        // case, not a refusal: the copy is adopted in place when the sandbox
+        // can reach it through a relative path (copy inside the session root),
+        // and the host is asked to move the session when it owns a worktree
+        // service (or the caller explicitly wants the host switch).
         if (norm(s.cwd) !== norm(target)) {
-          if (args.switch_session === true) {
+          const entries = await listWorktrees(s.cwd).then((r) => r.entries).catch(() => []);
+          const probe = { worktree: norm(target) };
+          const wantHostSwitch = caps.worktreeService === true || args.switch_session === true;
+          const mode = resolveBindingMode({ binding: probe, cwd: s.cwd, caps, entries });
+          if (wantHostSwitch) {
             const moved = await helpers.switchSession?.(target, args).catch((err) => ({ ok: false, reason: String(err?.message ?? err) }));
             if (moved?.ok) {
+              const cwdNow = moved.cwd ?? target;
               return {
                 bound: true,
                 switched: true,
-                worktree: moved.cwd ?? target,
+                worktree: cwdNow,
                 branch: moved.branch ?? "",
-                isolation: isolationGrade({ mode: caps.sandboxMode, binding: { worktree: target }, cwd: moved.cwd ?? target }),
+                mode: "rooted",
+                isolation: isolationGrade({ mode: caps.sandboxMode, binding: { worktree: cwdNow }, cwd: cwdNow }),
               };
             }
+            // the host cannot move the session — fall through to adoption
+          }
+          if (mode.kind === BINDING_ADOPTED) {
+            const binding = await lifecycle.enter({ path: target, sessionId: s.id, cwd: s.cwd, mode: "adopted" });
+            bustGuardContextCache();
             return {
-              bound: false,
-              switched: false,
-              reason: moved?.reason ?? "宿主不支持会话目录切换（ctx.workingDirectory.set 不可用）",
-              guidance: rootGuidance(target, caps),
+              bound: true,
+              adopted: true,
+              mode: "adopted",
+              worktree: binding.worktree,
+              branch: binding.branch ?? "",
+              session_root: norm(s.cwd),
+              isolation: "disciplinary",
             };
           }
-          return { bound: false, reason: "repo-rooted 绑定会造成读写分裂", guidance: rootGuidance(target, caps) };
+          return {
+            bound: false,
+            reason: mode.kind === "stale" ? `副本目录已不存在：${target}` : "本会话根不是目标副本，且副本不在会话根之内，无法安全采用",
+            diagnosis: mode.kind === "stale"
+              ? "副本已被删除（git 标记 prunable）"
+              : "沙箱只接受解析到会话根之内的相对路径；跨出会话根的绝对路径写入会被宿主拒绝",
+            guidance: rootGuidance(target, caps),
+          };
         }
         const binding = await lifecycle.enter({ path: args.path, sessionId: s.id, cwd: s.cwd });
         return {
@@ -252,7 +276,7 @@ export function toolSpecs(helpers) {
       parameters: { type: "object", properties: {} },
       output: {
         schema: S.obj({
-          mode: { type: "string", enum: ["rooted", "repo-rooted", "unbound"] },
+          mode: { type: "string", enum: ["rooted", "repo-rooted", "adopted", "unbound"] },
           binding: { oneOf: [{ type: "null" }, S.loose()] },
           copies: { type: "array", items: S.loose() },
           stale_bindings: { type: "array", items: S.loose() },

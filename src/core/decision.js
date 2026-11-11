@@ -77,7 +77,7 @@ export function decideWrite(rawPath, baseDir, ctx, binding, auth = {}) {
   if (cls.kind === "worktree" && (!binding || norm(cls.root) !== norm(binding.worktree))) {
     const next = binding
       ? `跨副本写入被禁止；本会话绑定副本 ${binding.worktree}，请用解析到本副本内的路径写入。`
-      : `跨副本写入一律禁止（无论会话是否绑定）。结构隔离只能先让会话根落在该副本上——以该副本为根新开会话；在此之前"绝对路径写副本"会与${FENCE_MARKER}的沙箱冲突。`;
+      : `跨副本写入一律禁止（无论会话是否绑定）。要把工作放到副本 ${cls.name} 上：在本会话调用 worktree_enter{path:"${cls.root}"}（采用模式，无需新开工作区），之后同一条相对路径就落在副本内。`;
     return deny("write", rawPath, `目标落在${binding ? "其他" : ""}副本 ${cls.name}`, next);
   }
   if (!binding) return allow(); // P1: unbound => host sandbox semantics

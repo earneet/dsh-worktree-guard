@@ -58,6 +58,14 @@ function boundedSet(cap) {
   };
 }
 
+/**
+ * Issue #5: for an ADOPTED binding (session root = main checkout, copy nested
+ * inside it) the host CANNOT be asked to rewrite tool args (C1: args are
+ * frozen), so adoption never rewrites — the guard's deny copy carries the
+ * copy-prefixed path instead (guard.js), which the model retries itself. The
+ * sandbox accepts that path because the copy sits inside the write boundary.
+ */
+
 export function apply(ctx, config) {
   if (config.enable === false) return;
 

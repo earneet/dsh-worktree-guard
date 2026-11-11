@@ -17,6 +17,7 @@ import { loadSidecar } from "./core/sidecar.js";
 import { GUARD_CTX_TTL_MS, DEFAULT_PROTECTED_BRANCHES } from "./core/constants.js";
 import { manualOrCliHint, humanChannelHint } from "./core/cli-path.js";
 import { structuralFence, fenceRecoveryLine, FENCE_MARKER } from "./core/capabilities.js";
+import { resolveBindingMode, adoptWord, BINDING_ADOPTED } from "./core/adopt.js";
 import { access } from "node:fs/promises";
 
 const ctxCache = new Map(); // commonDir -> { at, ctx }
@@ -183,24 +184,28 @@ async function sandboxDenied(binding, opts, header) {
 }
 
 /**
- * Issue #4 on the DENY path: with a FENCED sandbox the copy path is outside the
- * session's write boundary, so the usual "write absolute paths into the copy"
- * advice is refused by the sandbox itself. One line names the real route (the
- * capability-graded copy the tools/notice channels use), once per session — the
- * deny copy stays three parts (P6/§7 message budget).
+ * Issue #4 on the DENY path — now scoped to what is actually true: a fenced
+ * sandbox refuses an absolute-path write ONLY when the denied target lies
+ * OUTSIDE the session write boundary. A nested copy (the default layout) is
+ * inside it, so for those the adoption route (issue #5) is the advice; this
+ * line fires only for a copy the session genuinely cannot reach.
  */
-async function fenceAdvice(effOpts, header, target, denyReason) {
+async function fenceAdvice(effOpts, header, target, denyReason, mode) {
   if (!effOpts?.hostCapabilitiesOf || typeof effOpts.sandboxModeOf !== "function") return null;
-  if (!target) return null;
+  if (!target || !header?.cwd) return null;
+  // adoption already routes the work into the copy; the deny is about something
+  // else, and "outside your boundary" advice about the copy would be wrong.
+  if (mode?.kind === BINDING_ADOPTED) return null;
   let caps;
   try {
     caps = await effOpts.hostCapabilitiesOf(header);
   } catch {
     return null;
   }
-  if (structuralFence(caps?.sandboxMode) === null) return null; // no fence -> normal copy holds
-  // issue #4: the copy's own deny may already point at the write isolation —
-  // never append the same advice twice.
+  // claim sandbox behaviour only when the fenced mode was actually probed
+  const fence = structuralFence(caps?.sandboxMode);
+  if (fence === null || fence === undefined) return null;
+  if (isUnder(norm(target), norm(header.cwd))) return null; // inside the boundary
   if (String(denyReason ?? "").includes(FENCE_MARKER)) return null;
   return fenceRecoveryLine(caps);
 }
@@ -311,6 +316,18 @@ export async function decideToolCall(exec, opts = {}) {
     return sd;
   }
 
+  // Issue #5: a session that adopted a copy it cannot root itself in works in
+  // the copy through boundary-safe relative paths. `mode` drives every seam
+  // below; `binding` (the copy) is what the decision tables already understand.
+  let caps = null;
+  const capsOf = async () => {
+    if (caps) return caps;
+    if (typeof effOpts.hostCapabilitiesOf !== "function") return (caps = {});
+    caps = (await effOpts.hostCapabilitiesOf(header).catch(() => ({}))) ?? {};
+    return caps;
+  };
+  const mode = resolveBindingMode({ binding, cwd, caps: opts?.hostCapabilitiesOf ? await capsOf() : {}, entries: ctx.worktrees });
+
   const args = exec.arguments ?? {};
   const baseDir = cwd;
 
@@ -326,14 +343,26 @@ export async function decideToolCall(exec, opts = {}) {
     }
     // B6: a target classified "main" may be a copy created seconds ago via shell
     // (ctx cache is 2s stale) — re-check against a fresh worktree list.
-    if (classifyTarget({ target, mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir }).kind === "main") {
+    let cls0 = classifyTarget({ target, mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
+    if (cls0.kind === "main") {
       const fresh = await guardContext(cwd, { ...effOpts, force: true }).catch(() => null);
-      if (fresh) ({ commonDir, ctx } = fresh);
+      if (fresh) {
+        ({ commonDir, ctx } = fresh);
+        cls0 = classifyTarget({ target, mainRoot: ctx.mainRoot, worktrees: ctx.worktrees, commonDir: ctx.commonDir });
+      }
     }
     const d = decideWrite(target, baseDir, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
     if (d.kind === "deny") {
-      const fence = await fenceAdvice(effOpts, header, target, d.reason).catch(() => null);
+      // the fence line is only honest for a COPY the session cannot reach
+      const fence = cls0.kind === "worktree" ? await fenceAdvice(effOpts, header, target, d.reason, mode).catch(() => null) : null;
       if (fence) d.reason = `${d.reason}\n${fence}`;
+      // Issue #5: an adopted session that aimed a session-relative path at the
+      // main checkout gets the copy-prefixed retry path — one turn, executable,
+      // and the sandbox accepts it (the copy sits inside the write boundary).
+      else if (mode.kind === BINDING_ADOPTED && cls0.kind === "main") {
+        const rel = target.startsWith(`${norm(ctx.mainRoot)}/`) ? target.slice(norm(ctx.mainRoot).length + 1) : "";
+        if (rel) d.reason += `\n采用模式：本会话已绑定副本 ${mode.worktree}（分支 ${binding.branch ?? "?"}）——重试用 ${mode.rel}/${rel}（或绝对路径 ${mode.worktree}/${rel}），文件就会落在副本分支上。`;
+      }
       await safeAudit(commonDir, ident.sessionId, "deny_write", d.reason, args);
     }
     return d;
@@ -362,11 +391,14 @@ export async function decideToolCall(exec, opts = {}) {
       // issue #2: existence is probed here (guard), never inside the pure
       // decision tables, and only feeds deny copy.
       const missingPaths = await missingPathSet(args.command, cwd, ctx.mainRoot).catch(() => new Set());
-      d = decidePwsh({ command: args.command, currentBranchName: branchNow, cwd, missingPaths }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
-      if (d.kind === "deny") {
-        // issue #4: a fenced sandbox refuses copy-path writes; name the route
-        const fence = await fenceAdvice(effOpts, header, norm(cwd), d.reason).catch(() => null);
-        if (fence) d.reason = `${d.reason}\n${fence}`;
+      // Issue #5: the word-level adoption seam. Only boundary-safe rewrites
+      // (relative → the copy it already names, `cd <copy>` → itself) are added;
+      // a rewrite that cannot be done safely means the REAL string is decided.
+      const rewritten = mode.kind === BINDING_ADOPTED ? adoptShellWords(args.command, mode) : null;
+      d = decidePwsh({ command: rewritten?.command ?? args.command, currentBranchName: branchNow, cwd, missingPaths }, ctx, binding, await loadAuth(commonDir, ctx.mainRoot));
+      if (rewritten?.adopted && d.kind !== "deny") {
+        // P3: the model's relative copy word was read against the copy; say so.
+        d.mark = `[worktree-guard] 采用模式：${rewritten.note}（工作落在副本 ${binding.branch ?? "?"} 上）。`;
       }
     } catch (err) {
       // a broken net must not brick the session: fail-open + audit (§11)
@@ -377,6 +409,7 @@ export async function decideToolCall(exec, opts = {}) {
       await safeAudit(commonDir, ident.sessionId, "deny_shell", d.reason, args);
       return d;
     }
+    if (d.mark) putPendingMark(exec.callId, d.mark);
     // 0.2.3 (issue #1): the relaxed protected-push path is audited; the audit
     // record is the deviation trace (P3), the host still sees a plain allow.
     if (d.audit) {
@@ -385,6 +418,25 @@ export async function decideToolCall(exec, opts = {}) {
     return { kind: "allow" };
   }
   return { kind: "allow" };
+}
+
+/**
+ * Issue #5 word-level seam for adopted sessions: turn relative copy words into
+ * the copy path the model meant (see core/adopt.js). Every other byte of the
+ * command is left alone; no match returns null (the pristine string decides).
+ */
+function adoptShellWords(command, mode) {
+  if (mode?.kind !== BINDING_ADOPTED || typeof command !== "string" || !command) return null;
+  let adopted = 0;
+  let note = "";
+  const out = command.replace(/(^|[\s"'`;|&(])([^\s"'`;|&()<>]+)/g, (whole, lead, word) => {
+    const mapped = adoptWord(word, mode);
+    if (!mapped) return whole;
+    adopted += 1;
+    note = mapped === mode.worktree ? "cd 副本根" : "相对路径 → 副本内";
+    return lead + mapped;
+  });
+  return adopted ? { command: out, adopted, note } : null;
 }
 
 async function safeAudit(commonDir, sessionId, type, detail, args) {

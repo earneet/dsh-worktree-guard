@@ -73,6 +73,9 @@ export function isolationGrade({ mode, binding, cwd } = {}) {
   const fenced = structuralFence(mode);
   if (fenced === null) return ISOLATION_DISCIPLINARY;
   if (!binding) return ISOLATION_DISCIPLINARY;
+  // issue #5: an ADOPTED binding routes work into the copy, but the session
+  // root (and therefore the sandbox boundary) is still the main checkout.
+  if (binding.mode === "adopted") return ISOLATION_DISCIPLINARY;
   // An UNKNOWN mode is not provably unfenced, so a correctly rooted copy keeps
   // the structural grade here (P1: absence of a capability must not widen or
   // narrow the guard's own claims beyond what it can see).
@@ -82,7 +85,8 @@ export function isolationGrade({ mode, binding, cwd } = {}) {
 /** Machine-readable causes for the non-structural grade. */
 export function isolationReasons({ mode, binding, cwd, copiesUnbound = false } = {}) {
   const reasons = [];
-  if (binding == null || binding === undefined || binding === null) reasons.push("no-binding");
+  if (binding == null) reasons.push("no-binding");
+  else if (binding.mode === "adopted") reasons.push("adopted-copy-not-root");
   else if (norm(cwd) !== norm(binding.worktree)) reasons.push("binding-root-mismatch");
   if (structuralFence(mode) === null) reasons.push("sandbox-unfenced");
   if (mode === undefined) reasons.push("sandbox-mode-unknown");
@@ -92,40 +96,45 @@ export function isolationReasons({ mode, binding, cwd, copiesUnbound = false } =
 
 /**
  * Sentence naming the grade; `copiesUnbound` tells the degraded-but-copy-exists
- * case apart (that is the issue-#4 trap: a copy exists, the session is not in
- * it, so nothing the guard says may suggest it is isolated).
+ * case apart, and `adopted` the issue-#5 case (the guard routes the work into
+ * the copy, but the sandbox boundary is still the main checkout).
  */
-export function isolationNote({ grade, mode, copiesUnbound = false } = {}) {
+export function isolationNote({ grade, mode, copiesUnbound = false, adopted = false } = {}) {
   if (grade === ISOLATION_STRUCTURAL) {
     return `隔离等级：结构（会话根 = 副本，${fenceLabel(mode)}）。`;
   }
   const unfenced = structuralFence(mode) === null
     ? `沙箱 ${mode} ${fenceLabel(mode)}（比副本根更宽，副本边界只剩守卫的词法规则，P6）`
-    : copiesUnbound
-      ? `存在未绑定的副本，本会话并未在其中（写隔离靠"路径写对"，词法级、可绕，P6）`
-      : `本会话不在副本根内（跨根写入是逐次 deny 而非结构隔离，P6）`;
+    : adopted
+      ? `工作已路由到副本（write/edit/搜索与 bash -c 'cd <副本> && …' 都在副本内落地），但会话根仍是主 checkout，沙箱边界不随移动（P6）`
+      : copiesUnbound
+        ? `存在未绑定的副本，本会话并未在其中（写隔离靠"路径写对"，词法级、可绕，P6）`
+        : `本会话不在副本根内（跨根写入是逐次 deny 而非结构隔离，P6）`;
   return `隔离等级：纪律（${unfenced}）。`;
 }
 
 /**
  * One executable next step for a session that wants structural isolation but is
- * not in a copy. Each branch is only emitted when its capability was probed.
+ * not in a copy. Each branch is only emitted when its capability was probed —
+ * and the in-session route comes FIRST (issue #5: the human should not have to
+ * open a workspace just to let the agent work on a branch).
  */
 export function nextIsolationSteps(caps = {}) {
   const path = sessionRootPath(caps);
   const steps = [];
-  if (path === "gui-workspace") {
+  if (caps.worktreeService === true) {
     steps.push(
-      "宿主侧新开副本会话（GUI）：「添加工作区…」选中副本目录（或它的上级）→ 在该工作区里新建会话；新会话的写边界就是那次选择的目录。",
+      "会话内切换到副本（宿主自己的 worktree 服务）：worktree_enter{path, switch_session:true} 调用宿主 workingDirectory.set 并绑定，宿主负责 checkout 与提示。",
     );
-    if (caps.workingDirectory !== true) return steps; // no in-session alternative at all
+  } else {
+    steps.push(
+      "会话内采用副本（无需新开工作区）：worktree_enter{path} 绑定该副本，进入采用模式——write/edit/搜索用 .worktrees/<副本名>/ 前缀路径（在会话写边界之内），bash 用 bash -c 'cd <副本> && …'（相对 cd）。",
+    );
   }
-  if (caps.workingDirectory === true) {
-    steps.push(
-      "会话内切换（写边界不变）：worktree_enter{path, switch_session:true} 让宿主 workingDirectory.set 把本会话目录移进副本；写边界仍按会话创建时的 cwd 计，真结构隔离仍要上一条。",
-    );
-  } else if (path === "unavailable") {
-    steps.push("降级继续（纪律级）：向副本内写文件用绝对路径（相对路径落主 checkout）；读域不受守卫约束，主 checkout 仍在可写范围内。");
+  if (path === "gui-workspace") {
+    steps.push("真结构隔离（可选）：GUI「添加工作区…」选中副本目录 → 在新工作区新建会话，新会话的写边界就是副本。");
+  } else {
+    steps.push("真结构隔离（可选）需要以副本为根的新会话入口，本宿主未探测到——采用模式已可在副本分支上完成全部工作。");
   }
   return steps;
 }
@@ -135,13 +144,13 @@ export function denyRecoveryText(caps = {}) {
   return `副本会话本身已是结构隔离：${withPathTypedRoute(caps).join(" ")}`;
 }
 
-/** Dry-run / otherwise harmless copy can name the fence plainly without skipping. */
-export const FENCE_MARKER = "副本写边界不含副本";
+/** Only factually true for a copy OUTSIDE the session write boundary. */
+export const FENCE_MARKER = "副本在会话写边界之外";
 
-/** Deny-path probe line: names the fence and the first reachable route. */
+/** Deny-path line for an out-of-boundary copy under a probed fenced sandbox. */
 export function fenceRecoveryLine(caps = {}) {
   const first = withPathTypedRoute(caps)[0];
-  return first ? `${FENCE_MARKER}（沙箱会拒绝写到副本的绝对路径）——结构隔离只能先让会话根落在副本上：${first}` : null;
+  return first ? `${FENCE_MARKER}（绝对路径写入会被沙箱拒绝）——先把工作路由进副本：${first}` : null;
 }
 
 /**
@@ -165,9 +174,11 @@ export function noteFenceAdvice(sessionId, cap = 1000) {
  */
 export function sessionAdvice({ mode } = {}) {
   if (structuralFence(mode) === null) {
-    return "在此之前：写文件用指向副本内的绝对路径（相对路径落主 checkout），读域不受守卫约束；沙箱不围栏，主 checkout 仍在可写范围内。";
+    return "在此之前：写文件用指向副本内的绝对路径（相对路径落主 checkout）；沙箱不围栏，主 checkout 仍在可写范围内。";
   }
-  return `在此之前：${FENCE_MARKER}，写副本的绝对路径会被沙箱拒绝——相对路径写会让文件落到主 checkout，改写前先确认路径；主 checkout 仍在可写范围内，属纪律级。`;
+  // fenced: nested copies are INSIDE the boundary, so the honest interim rule is
+  // "relative paths land on main; adopt first, then use the copy prefix".
+  return "在此之前：本会话未绑定副本，相对路径会落主 checkout（写它就是改主干）；先 worktree_enter 采用副本，再以 .worktrees/<副本名>/ 前缀路径写。";
 }
 
 /* ---------- probe seams (the only impure part; host objects only) ---------- */
